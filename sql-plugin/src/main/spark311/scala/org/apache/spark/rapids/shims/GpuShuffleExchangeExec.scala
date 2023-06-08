@@ -43,6 +43,7 @@ package org.apache.spark.rapids.shims
 
 import com.nvidia.spark.rapids.GpuPartitioning
 
+import org.apache.spark.MapOutputStatistics
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
@@ -72,6 +73,10 @@ case class GpuShuffleExchangeExec(
     new ShuffledBatchRDD(shuffleDependencyColumnar, metrics ++ readMetrics, partitionSpecs)
   }
 
+  override def mapOutputStatistics: MapOutputStatistics = {
+    null
+  }
+
   override def runtimeStatistics: Statistics = {
     // note that Spark will only use the sizeInBytes statistic but making the rowCount
     // available here means that we can more easily reference it in GpuOverrides when
@@ -80,5 +85,9 @@ case class GpuShuffleExchangeExec(
       sizeInBytes = metrics("dataSize").value,
       rowCount = Some(metrics("numOutputRows").value)
     )
+  }
+
+  override def withNewChildInternal(newChild: SparkPlan): SparkPlan = {
+    GpuShuffleExchangeExec(gpuOutputPartitioning, newChild, shuffleOrigin)(cpuOutputPartitioning)
   }
 }

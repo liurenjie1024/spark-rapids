@@ -434,6 +434,20 @@ class HMBSeekableInputStream(
           buf.remaining + " bytes left to read")
     }
   }
+
+
+  override def readFully(l: Long, bytes: Array[Byte], i: Int, i1: Int): Unit = {
+    throw new RuntimeException("有大病整这么多接口")
+  }
+
+  override def readFully(l: Long, byteBuffer: ByteBuffer): Unit = {
+    throw new RuntimeException("有大病整这么多接口")
+  }
+
+  override def randReadFully(list: util.List[java.lang.Long],
+                             list1: util.List[ByteBuffer]): Unit = {
+    throw new RuntimeException("有大病整这么多接口")
+  }
 }
 
 class HMBInputFile(buffer: HostMemoryBuffer) extends InputFile {

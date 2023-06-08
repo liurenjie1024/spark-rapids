@@ -24,9 +24,9 @@ import java.nio.ByteBuffer
 
 import com.nvidia.spark.rapids.{GpuMetric, HostMemoryOutputStream, NoopMetric}
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.hive.common.io.DiskRangeList
 import org.apache.orc.{CompressionCodec, DataReader, OrcFile, OrcProto, StripeInformation, TypeDescription}
 import org.apache.orc.impl.{BufferChunk, DataReaderProperties, OrcIndex, RecordReaderUtils}
+import org.apache.orc.storage.common.io.DiskRangeList
 
 /**
  * File cache is not supported for Spark 3.1.x so this is a thin wrapper
