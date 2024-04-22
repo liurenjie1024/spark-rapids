@@ -21,13 +21,12 @@
 
 package com.databricks.sql.transaction.tahoe.rapids
 
-import com.databricks.sql.transaction.tahoe.{DeltaLog, DeltaOperations, DeltaTableUtils, DeltaUDF, OptimisticTransaction}
+import com.databricks.sql.transaction.tahoe.{DeltaLog, DeltaOperations, DeltaOptions, DeltaTableUtils, DeltaUDF, OptimisticTransaction}
 import com.databricks.sql.transaction.tahoe.actions.{AddCDCFile, AddFile, FileAction}
 import com.databricks.sql.transaction.tahoe.commands.{DeltaCommand, UpdateCommand, UpdateMetric}
 import com.databricks.sql.transaction.tahoe.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import com.nvidia.spark.rapids.delta.GpuDeltaMetricUpdateUDF
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
@@ -41,12 +40,12 @@ import org.apache.spark.sql.functions.input_file_name
 import org.apache.spark.sql.types.LongType
 
 case class GpuUpdateCommand(
-    gpuDeltaLog: GpuDeltaLog,
-    tahoeFileIndex: TahoeFileIndex,
-    target: LogicalPlan,
-    updateExpressions: Seq[Expression],
-    condition: Option[Expression])
-    extends LeafRunnableCommand with DeltaCommand {
+                             gpuDeltaLog: GpuDeltaLog,
+                             tahoeFileIndex: TahoeFileIndex,
+                             target: LogicalPlan,
+                             updateExpressions: Seq[Expression],
+                             condition: Option[Expression])
+  extends LeafRunnableCommand with DeltaCommand {
 
   override val output: Seq[Attribute] = {
     Seq(AttributeReference("num_affected_rows", LongType)())
@@ -62,11 +61,11 @@ case class GpuUpdateCommand(
     "numUpdatedRows" -> createMetric(sc, "number of rows updated."),
     "numCopiedRows" -> createMetric(sc, "number of rows copied."),
     "executionTimeMs" ->
-        createTimingMetric(sc, "time taken to execute the entire operation"),
+      createTimingMetric(sc, "time taken to execute the entire operation"),
     "scanTimeMs" ->
-        createTimingMetric(sc, "time taken to scan the files for matches"),
+      createTimingMetric(sc, "time taken to scan the files for matches"),
     "rewriteTimeMs" ->
-        createTimingMetric(sc, "time taken to rewrite the matched files"),
+      createTimingMetric(sc, "time taken to rewrite the matched files"),
     "numAddedChangeFiles" -> createMetric(sc, "number of change data capture files generated"),
     "changeFileBytes" -> createMetric(sc, "total size of change data capture files generated"),
     "numTouchedRows" -> createMetric(sc, "number of rows touched (copied + updated)"),
@@ -89,7 +88,7 @@ case class GpuUpdateCommand(
   }
 
   private def performUpdate(
-      sparkSession: SparkSession, deltaLog: DeltaLog, txn: OptimisticTransaction): Unit = {
+                             sparkSession: SparkSession, deltaLog: DeltaLog, txn: OptimisticTransaction): Unit = {
     import com.databricks.sql.transaction.tahoe.implicits._
 
     var numTouchedFiles: Long = 0
@@ -134,11 +133,11 @@ case class GpuUpdateCommand(
       val pathsToRewrite =
         withStatusCode("DELTA", UpdateCommand.FINDING_TOUCHED_FILES_MSG) {
           data.filter(new Column(updateCondition))
-              .select(input_file_name())
-              .filter(updatedRowUdf())
-              .distinct()
-              .as[String]
-              .collect()
+            .select(input_file_name())
+            .filter(updatedRowUdf())
+            .distinct()
+            .as[String]
+            .collect()
         }
 
       scanTimeMs = (System.nanoTime() - startTime) / 1000 / 1000
@@ -191,7 +190,7 @@ case class GpuUpdateCommand(
       // metadata predicates and so the entire partition is re-written.
       val outputRows = txn.getMetric("numOutputRows").map(_.value).getOrElse(-1L)
       if (metrics("numUpdatedRows").value == 0 && outputRows != 0 &&
-          metrics("numCopiedRows").value == 0) {
+        metrics("numCopiedRows").value == 0) {
         // We know that numTouchedRows = numCopiedRows + numUpdatedRows.
         // Since an entire partition was re-written, no rows were copied.
         // So numTouchedRows == numUpdateRows
@@ -238,12 +237,12 @@ case class GpuUpdateCommand(
    * @return the list of [[AddFile]]s and [[AddCDCFile]]s that have been written.
    */
   private def rewriteFiles(
-      spark: SparkSession,
-      txn: OptimisticTransaction,
-      rootPath: Path,
-      inputLeafFiles: Seq[String],
-      nameToAddFileMap: Map[String, AddFile],
-      condition: Expression): Seq[FileAction] = {
+                            spark: SparkSession,
+                            txn: OptimisticTransaction,
+                            rootPath: Path,
+                            inputLeafFiles: Seq[String],
+                            nameToAddFileMap: Map[String, AddFile],
+                            condition: Expression): Seq[FileAction] = {
     // Containing the map from the relative file path to AddFile
     val baseRelation = buildBaseRelation(
       spark, txn, "update", rootPath, inputLeafFiles, nameToAddFileMap)
@@ -262,10 +261,12 @@ case class GpuUpdateCommand(
       updateExpressions,
       condition,
       targetDf
-          .filter(numTouchedRowsUdf())
-          .withColumn(UpdateCommand.CONDITION_COLUMN_NAME, new Column(condition)),
+        .filter(numTouchedRowsUdf())
+        .withColumn(UpdateCommand.CONDITION_COLUMN_NAME, new Column(condition)),
       UpdateCommand.shouldOutputCdc(txn))
 
-    txn.writeFiles(updatedDataFrame)
+    val deltaOptions = new DeltaOptions(Map(DeltaOptions.OPTIMIZE_WRITE_OPTION -> "true"),
+      spark.sessionState.conf)
+    txn.writeFiles(updatedDataFrame, Some(deltaOptions))
   }
 }

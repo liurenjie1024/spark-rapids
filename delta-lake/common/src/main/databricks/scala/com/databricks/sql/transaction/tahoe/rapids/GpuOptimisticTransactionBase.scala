@@ -48,19 +48,20 @@ import org.apache.spark.util.Clock
  *
  * This class is not thread-safe.
  *
- * @param deltaLog The Delta Log for the table this transaction is modifying.
- * @param snapshot The snapshot that this transaction is reading at.
+ * @param deltaLog   The Delta Log for the table this transaction is modifying.
+ * @param snapshot   The snapshot that this transaction is reading at.
  * @param rapidsConf RAPIDS Accelerator config settings.
  */
 abstract class GpuOptimisticTransactionBase
-    (deltaLog: DeltaLog, snapshot: Snapshot, val rapidsConf: RapidsConf)
-    (implicit clock: Clock)
+(deltaLog: DeltaLog, snapshot: Snapshot, val rapidsConf: RapidsConf)
+(implicit clock: Clock)
   extends OptimisticTransaction(deltaLog, snapshot)(clock)
-  with DeltaLogging {
+    with DeltaLogging {
 
   /**
    * Adds checking of constraints on the table
-   * @param plan Plan to generate the table to check against constraints
+   *
+   * @param plan        Plan to generate the table to check against constraints
    * @param constraints Constraints to check on the table
    * @return GPU columnar plan to execute
    */
@@ -79,9 +80,9 @@ abstract class GpuOptimisticTransactionBase
 
   /** GPU version of convertEmptyToNullIfNeeded */
   private def gpuConvertEmptyToNullIfNeeded(
-      plan: GpuExec,
-      partCols: Seq[Attribute],
-      constraints: Seq[Constraint]): SparkPlan = {
+                                             plan: GpuExec,
+                                             partCols: Seq[Attribute],
+                                             constraints: Seq[Constraint]): SparkPlan = {
     if (!spark.conf.get(DeltaSQLConf.CONVERT_EMPTY_TO_NULL_FOR_STRING_PARTITION_COL)) {
       return plan
     }
@@ -112,15 +113,15 @@ abstract class GpuOptimisticTransactionBase
    * partition column using the original plan's output. When the plan is modified with additional
    * projections, the partition column check won't match and will not add more conversion.
    *
-   * @param plan The original SparkPlan.
-   * @param partCols The partition columns.
+   * @param plan        The original SparkPlan.
+   * @param partCols    The partition columns.
    * @param constraints The defined constraints.
    * @return A SparkPlan potentially modified with an additional projection on top of `plan`
    */
   override def convertEmptyToNullIfNeeded(
-      plan: SparkPlan,
-      partCols: Seq[Attribute],
-      constraints: Seq[Constraint]): SparkPlan = {
+                                           plan: SparkPlan,
+                                           partCols: Seq[Attribute],
+                                           constraints: Seq[Constraint]): SparkPlan = {
     // Reuse the CPU implementation if the plan ends up on the CPU, otherwise do the
     // equivalent on the GPU.
     plan match {
@@ -130,19 +131,21 @@ abstract class GpuOptimisticTransactionBase
   }
 
   override def writeFiles(
-      inputData: Dataset[_],
-      additionalConstraints: Seq[Constraint]): Seq[FileAction] = {
+                           inputData: Dataset[_],
+                           additionalConstraints: Seq[Constraint]): Seq[FileAction] = {
     writeFiles(inputData, None, additionalConstraints)
   }
 
   protected def applyOptimizeWriteIfNeeded(
-      spark: SparkSession,
-      physicalPlan: SparkPlan,
-      partitionSchema: StructType,
-      isOptimize: Boolean): SparkPlan = {
+                                            spark: SparkSession,
+                                            physicalPlan: SparkPlan,
+                                            partitionSchema: StructType,
+                                            isOptimize: Boolean,
+                                            deltaOptions: Option[DeltaOptions]): SparkPlan = {
     val optimizeWriteEnabled = !isOptimize &&
+      (deltaOptions.flatMap(_.optimizeWrite).getOrElse(false) ||
         spark.sessionState.conf.getConf(DeltaSQLConf.DELTA_OPTIMIZE_WRITE_ENABLED)
-            .orElse(DeltaConfigs.OPTIMIZE_WRITE.fromMetaData(metadata)).getOrElse(false)
+          .orElse(DeltaConfigs.OPTIMIZE_WRITE.fromMetaData(metadata)).getOrElse(false))
     if (optimizeWriteEnabled) {
       val planWithoutTopRepartition =
         DeltaShufflePartitionsUtil.removeTopRepartition(physicalPlan)

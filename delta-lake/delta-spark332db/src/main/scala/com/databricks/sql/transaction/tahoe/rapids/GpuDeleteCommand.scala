@@ -21,14 +21,13 @@
 
 package com.databricks.sql.transaction.tahoe.rapids
 
-import com.databricks.sql.transaction.tahoe.{DeltaConfigs, DeltaLog, DeltaOperations, DeltaTableUtils, DeltaUDF, OptimisticTransaction}
+import com.databricks.sql.transaction.tahoe.{DeltaConfigs, DeltaLog, DeltaOperations, DeltaOptions, DeltaTableUtils, DeltaUDF, OptimisticTransaction}
 import com.databricks.sql.transaction.tahoe.actions.{Action, AddCDCFile, FileAction}
 import com.databricks.sql.transaction.tahoe.commands.{DeleteCommandMetrics, DeleteMetric, DeltaCommand}
 import com.databricks.sql.transaction.tahoe.commands.MergeIntoCommand.totalBytesAndDistinctPartitionValues
 import com.databricks.sql.transaction.tahoe.files.TahoeBatchFileIndex
-import com.databricks.sql.transaction.tahoe.rapids.GpuDeleteCommand.{rewritingFilesMsg, FINDING_TOUCHED_FILES_MSG}
+import com.databricks.sql.transaction.tahoe.rapids.GpuDeleteCommand.{FINDING_TOUCHED_FILES_MSG, rewritingFilesMsg}
 import com.nvidia.spark.rapids.delta.GpuDeltaMetricUpdateUDF
-
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.{Column, DataFrame, Dataset, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, EqualNullSafe, Expression, If, Literal, Not}
@@ -46,17 +45,17 @@ import org.apache.spark.sql.types.LongType
  * Performs a Delete based on the search condition
  *
  * Algorithm:
- *   1) Scan all the files and determine which files have
- *      the rows that need to be deleted.
- *   2) Traverse the affected files and rebuild the touched files.
- *   3) Use the Delta protocol to atomically write the remaining rows to new files and remove
- *      the affected files that are identified in step 1.
+ * 1) Scan all the files and determine which files have
+ * the rows that need to be deleted.
+ * 2) Traverse the affected files and rebuild the touched files.
+ * 3) Use the Delta protocol to atomically write the remaining rows to new files and remove
+ * the affected files that are identified in step 1.
  */
 case class GpuDeleteCommand(
-    gpuDeltaLog: GpuDeltaLog,
-    target: LogicalPlan,
-    condition: Option[Expression])
-    extends LeafRunnableCommand with DeltaCommand with DeleteCommandMetrics {
+                             gpuDeltaLog: GpuDeltaLog,
+                             target: LogicalPlan,
+                             condition: Option[Expression])
+  extends LeafRunnableCommand with DeltaCommand with DeleteCommandMetrics {
 
   override def innerChildren: Seq[QueryPlan[_]] = Seq(target)
 
@@ -99,9 +98,9 @@ case class GpuDeleteCommand(
   }
 
   def performDelete(
-      sparkSession: SparkSession,
-      deltaLog: DeltaLog,
-      txn: OptimisticTransaction): Seq[Action] = {
+                     sparkSession: SparkSession,
+                     deltaLog: DeltaLog,
+                     txn: OptimisticTransaction): Seq[Action] = {
     import com.databricks.sql.transaction.tahoe.implicits._
 
     var numRemovedFiles: Long = 0
@@ -202,11 +201,11 @@ case class GpuDeleteCommand(
                 Array.empty[String]
               } else {
                 data.filter(new Column(cond))
-                    .select(input_file_name())
-                    .filter(deletedRowUdf())
-                    .distinct()
-                    .as[String]
-                    .collect()
+                  .select(input_file_name())
+                  .filter(deletedRowUdf())
+                  .distinct()
+                  .as[String]
+                  .collect()
               }
             }
 
@@ -231,7 +230,7 @@ case class GpuDeleteCommand(
             val filterCond = Not(EqualNullSafe(cond, Literal.TrueLiteral))
             val rewrittenActions = rewriteFiles(txn, targetDF, filterCond, filesToRewrite.length)
             val (changeFiles, rewrittenFiles) = rewrittenActions
-                .partition(_.isInstanceOf[AddCDCFile])
+              .partition(_.isInstanceOf[AddCDCFile])
             numAddedFiles = rewrittenFiles.size
             val removedFiles = filesToRewrite.map(f =>
               getTouchedFile(deltaLog.dataPath, f, nameToAddFileMap))
@@ -253,7 +252,7 @@ case class GpuDeleteCommand(
 
             val operationTimestamp = System.currentTimeMillis()
             removeFilesFromPaths(deltaLog, nameToAddFileMap, filesToRewrite, operationTimestamp) ++
-                rewrittenActions
+              rewrittenActions
           }
         }
     }
@@ -317,10 +316,10 @@ case class GpuDeleteCommand(
    * Returns the list of `AddFile`s and `AddCDCFile`s that have been re-written.
    */
   private def rewriteFiles(
-      txn: OptimisticTransaction,
-      baseData: DataFrame,
-      filterCondition: Expression,
-      numFilesToRewrite: Long): Seq[FileAction] = {
+                            txn: OptimisticTransaction,
+                            baseData: DataFrame,
+                            filterCondition: Expression,
+                            numFilesToRewrite: Long): Seq[FileAction] = {
     val shouldWriteCdc = DeltaConfigs.CHANGE_DATA_FEED.fromMetaData(txn.metadata)
 
     // number of total rows that we have seen / are either copying or deleting (sum of both).
@@ -339,18 +338,20 @@ case class GpuDeleteCommand(
         // as table data, while all rows which don't match are removed from the rewritten table data
         // but do get included in the output as CDC events.
         baseData
-            .filter(numTouchedRowsUdf())
-            .withColumn(
-              CDC_TYPE_COLUMN_NAME,
-              new Column(If(filterCondition, CDC_TYPE_NOT_CDC, CDC_TYPE_DELETE))
-            )
+          .filter(numTouchedRowsUdf())
+          .withColumn(
+            CDC_TYPE_COLUMN_NAME,
+            new Column(If(filterCondition, CDC_TYPE_NOT_CDC, CDC_TYPE_DELETE))
+          )
       } else {
         baseData
-            .filter(numTouchedRowsUdf())
-            .filter(new Column(filterCondition))
+          .filter(numTouchedRowsUdf())
+          .filter(new Column(filterCondition))
       }
 
-      txn.writeFiles(dfToWrite)
+      val deltaOptions = new DeltaOptions(Map(DeltaOptions.OPTIMIZE_WRITE_OPTION -> "true"),
+        baseData.sparkSession.sessionState.conf)
+      txn.writeFiles(dfToWrite, Some(deltaOptions))
     }
   }
 }
