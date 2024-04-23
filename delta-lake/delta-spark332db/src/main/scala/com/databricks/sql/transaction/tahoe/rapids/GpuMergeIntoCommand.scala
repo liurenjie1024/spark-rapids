@@ -820,7 +820,10 @@ case class GpuMergeIntoCommand(
 
     // Write to Delta
     val newFiles = deltaTxn
-      .writeFiles(repartitionIfNeeded(spark, outputDF, deltaTxn.metadata.partitionColumns))
+      .writeFiles(
+        outputDF,
+        Some(new DeltaOptions(Map(DeltaOptions.OPTIMIZE_WRITE_OPTION -> "true"),
+          spark.sessionState.conf)))
 
     // Update metrics
     val (addedBytes, addedPartitions) = totalBytesAndDistinctPartitionValues(newFiles)
