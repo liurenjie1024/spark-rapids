@@ -946,16 +946,25 @@ object GpuLowShuffleMergeCommand {
         // FORCE_ONE_FILE_PER_PARITION in file scan, which currently only works for
         // GpuFileSourceScanExec, so we have to rollback to original input if for some reason we
         // can use GpuFileSourceScanExec.
+
         val gpuFileScanOverride = checkGpuFileSourceScanExecOverride(df)
+
+        //        if (!gpuFileScanOverride) {
+        //          logWarning(
+        //            """Unable to override file scan for low shuffle merge, reverting to target
+        //            table
+        //              |shuffle.""".stripMargin)
+        //          makeUnmodifiedTargetDF(baseTargetDF, modifiedTargetRows)
+        //        } else {
+        //          df
 
         if (!gpuFileScanOverride) {
           logWarning(
             """Unable to override file scan for low shuffle merge, reverting to target table
               |shuffle.""".stripMargin)
           makeUnmodifiedTargetDF(baseTargetDF, modifiedTargetRows)
-        } else {
-          df
         }
+        df
       }
 
       // Note we don't need to repartition here since they are unmodified.

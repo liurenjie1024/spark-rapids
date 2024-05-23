@@ -956,14 +956,22 @@ object GpuLowShuffleMergeCommand {
         // can use GpuFileSourceScanExec.
         val gpuFileScanOverride = checkGpuFileSourceScanExecOverride(df)
 
+        //        if (!gpuFileScanOverride) {
+        //          logWarning(
+        //            """Unable to override file scan for low shuffle merge, reverting to target
+        //            table
+        //              |shuffle.""".stripMargin)
+        //          makeUnmodifiedTargetDF(baseTargetDF, modifiedTargetRows)
+        //        } else {
+        //          df
+
         if (!gpuFileScanOverride) {
-          logWarning(
-            """Unable to override file scan for low shuffle merge, reverting to target table
-              |shuffle.""".stripMargin)
-          makeUnmodifiedTargetDF(baseTargetDF, modifiedTargetRows)
-        } else {
-          df
+                  logWarning(
+                    """Unable to override file scan for low shuffle merge, reverting to target table
+                      |shuffle.""".stripMargin)
+                  makeUnmodifiedTargetDF(baseTargetDF, modifiedTargetRows)
         }
+        df
       }
 
       // Note we don't need to repartition here since they are unmodified.
