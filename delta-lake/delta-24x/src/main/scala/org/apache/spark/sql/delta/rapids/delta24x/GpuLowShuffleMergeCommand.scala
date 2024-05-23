@@ -734,7 +734,7 @@ object GpuLowShuffleMergeCommand {
         notMatchedOutputs = notMatchedOutputs,
         notMatchedBySourceConditions = notMatchedBySourceConditions,
         notMatchedBySourceOutputs = notMatchedBySourceOutputs)
-//        .localCheckpoint(true)
+        .localCheckpoint(true)
       
 
 
