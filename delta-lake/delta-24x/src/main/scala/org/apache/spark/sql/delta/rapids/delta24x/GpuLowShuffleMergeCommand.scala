@@ -1156,8 +1156,13 @@ object GpuLowShuffleMergeCommand {
           .executedPlan
 
         var pushed = false
-        GpuOverrides().applyWithContext(executedPlan.clone(), Some(
-          """Detecting GpuFileSourceScanExec could be pushed down""".stripMargin)).foreachUp {
+        val tryOverridedPlan = GpuOverrides().applyWithContext(executedPlan.clone(), Some(
+            """Detecting GpuFileSourceScanExec could be pushed down""".stripMargin))
+
+        logWarning(s"""Low shuffle merge try overrided plan:
+                      |${tryOverridedPlan.verboseStringWithOperatorId()}""")
+
+        tryOverridedPlan.foreachUp {
           case r: GpuRapidsRepartitionByFilePathExec =>
             pushed = r.exists(_.isInstanceOf[GpuFileSourceScanExec])
           case _ =>
