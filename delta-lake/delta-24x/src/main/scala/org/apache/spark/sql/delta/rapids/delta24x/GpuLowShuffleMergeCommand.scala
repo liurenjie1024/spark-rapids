@@ -973,10 +973,10 @@ object GpuLowShuffleMergeCommand {
         //          df
 
         if (!gpuFileScanOverride) {
-                  logWarning(
-                    """Unable to override file scan for low shuffle merge, reverting to target table
-                      |shuffle.""".stripMargin)
-                  makeUnmodifiedTargetDF(baseTargetDF, modifiedTargetRows)
+          logWarning(
+            """Unable to override file scan for low shuffle merge, reverting to target table
+              |shuffle.""".stripMargin)
+          makeUnmodifiedTargetDF(baseTargetDF, modifiedTargetRows)
         }
         df
       }
@@ -1177,7 +1177,7 @@ object GpuLowShuffleMergeCommand {
     private def addRepartitionByFilePath(input: DataFrame): DataFrame = {
       logDebug(s"Trying to adding RapidsRepartitionByFilePath plan node")
       val newLogicalPlan = input.queryExecution.optimizedPlan.transformUp({
-        case p@Project(projectList, r @ LogicalRelation(fs: HadoopFsRelation, _, _, _)) =>
+        case p@Project(projectList, r@LogicalRelation(fs: HadoopFsRelation, _, _, _)) =>
           if (projectList.exists(_.name == FILE_PATH_COL)) {
             // Here we enforce that the targetDF to read each file per partition. This is to ensure
             // that we can avoid shuffling the target data when doing left anti join in the second
@@ -1216,23 +1216,24 @@ object GpuLowShuffleMergeCommand {
     }
 
     private def checkGpuFileSourceScanExecOverride(input: DataFrame): Boolean = {
-        val executedPlan = input.queryExecution
-          .executedPlan
+      val executedPlan = input.queryExecution
+        .executedPlan
 
-        var pushed = false
-        val tryOverridedPlan = GpuOverrides().applyWithContext(executedPlan.clone(), Some(
-            """Detecting GpuFileSourceScanExec could be pushed down""".stripMargin))
+      var pushed = false
 
-        logWarning(s"""Low shuffle merge try overrided plan:
-                      |${tryOverridedPlan.verboseStringWithOperatorId()}""")
+      val tryOverridedPlan = GpuOverrides().applyWithContext(executedPlan.clone(), Some(
+        """Detecting GpuFileSourceScanExec could be pushed down""".stripMargin))
 
-        tryOverridedPlan.foreachUp {
-          case r: GpuRapidsRepartitionByFilePathExec =>
-            pushed = r.exists(_.isInstanceOf[GpuFileSourceScanExec])
-          case _ =>
-        }
+      logWarning(
+        s"""Low shuffle merge try overrided plan:
+           |${tryOverridedPlan.verboseStringWithOperatorId()}""")
+      tryOverridedPlan.foreachUp {
+        case r: GpuRapidsRepartitionByFilePathExec =>
+          pushed = r.exists(_.isInstanceOf[GpuFileSourceScanExec])
+        case _ =>
+      }
 
-        pushed
+      pushed
     }
   }
 }
