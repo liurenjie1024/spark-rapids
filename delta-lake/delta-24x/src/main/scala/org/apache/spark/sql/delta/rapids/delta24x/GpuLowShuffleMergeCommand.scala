@@ -26,16 +26,16 @@ import java.util.concurrent.TimeUnit
 import scala.collection.JavaConverters._
 import scala.collection.mutable
 
-import com.nvidia.spark.rapids.{BaseExprMeta, GpuOverrides, RapidsConf}
+import com.nvidia.spark.rapids.{GpuOverrides, RapidsConf}
 import com.nvidia.spark.rapids.delta._
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils._
-import org.apache.spark.SparkContext
 
+import org.apache.spark.SparkContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, BasePredicate, CaseWhen, Expression, Literal, NamedExpression, PredicateHelper, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.expressions.codegen.GeneratePredicate
@@ -1051,9 +1051,9 @@ object GpuLowShuffleMergeCommand {
       resolveOnJoinedPlan(Seq(condExpr)).head
     }
 
-    private def wrap(e: Expression): BaseExprMeta[Expression] = {
-      GpuOverrides.wrapExpr(e, cmd.rapidsConf, None)
-    }
+//    private def wrap(e: Expression): BaseExprMeta[Expression] = {
+//      GpuOverrides.wrapExpr(e, cmd.rapidsConf, None)
+//    }
 
 //    private def addMergeJoinProcessor(
 //        spark: SparkSession,
@@ -1082,7 +1082,8 @@ object GpuLowShuffleMergeCommand {
 //        notMatchedBySourceConditionsMetas ++ notMatchedBySourceOutputsMetas.flatten.flatten
 //
 //      allMetas.foreach(_.tagForGpu())
-//      val canReplace = allMetas.forall(_.canExprTreeBeReplaced) && cmd.rapidsConf.isOperatorEnabled(
+//      val canReplace = allMetas.forall(_.canExprTreeBeReplaced) &&
+    //      cmd.rapidsConf.isOperatorEnabled(
 //        "spark.rapids.sql.exec.RapidsProcessDeltaMergeJoinExec", false, false)
 //      if (cmd.rapidsConf.shouldExplainAll || (cmd.rapidsConf.shouldExplain && !canReplace)) {
 //        val exprExplains = allMetas.map(_.explain(cmd.rapidsConf.shouldExplainAll))
