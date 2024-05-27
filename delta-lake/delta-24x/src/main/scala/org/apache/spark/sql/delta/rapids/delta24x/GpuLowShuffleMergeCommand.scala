@@ -29,14 +29,14 @@ import scala.collection.mutable
 import com.nvidia.spark.rapids.{BaseExprMeta, GpuOverrides, RapidsConf}
 import com.nvidia.spark.rapids.delta._
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils._
-
 import org.apache.spark.SparkContext
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, BasePredicate, Expression, Literal, NamedExpression, PredicateHelper, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, BasePredicate, CaseWhen, Expression, Literal, NamedExpression, PredicateHelper, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.expressions.codegen.GeneratePredicate
 import org.apache.spark.sql.catalyst.plans.logical.{DeltaMergeAction, DeltaMergeIntoClause, DeltaMergeIntoMatchedClause, DeltaMergeIntoMatchedDeleteClause, DeltaMergeIntoMatchedUpdateClause, DeltaMergeIntoNotMatchedBySourceClause, DeltaMergeIntoNotMatchedBySourceDeleteClause, DeltaMergeIntoNotMatchedBySourceUpdateClause, DeltaMergeIntoNotMatchedClause, DeltaMergeIntoNotMatchedInsertClause, LogicalPlan, Project}
@@ -683,10 +683,10 @@ object GpuLowShuffleMergeCommand {
 
     private val joinType = if (cmd.hasNoInserts &&
       spark.conf.get(DeltaSQLConf.MERGE_MATCHED_ONLY_ENABLED)) {
-      "rightOuter"
-    } else {
-      "fullOuter"
-    }
+        "inner"
+      } else {
+        "leftOuter"
+      }
 
     private val joinedDF = {
       sourceDF.join(targetDF, new Column(cmd.condition), joinType)
@@ -725,16 +725,23 @@ object GpuLowShuffleMergeCommand {
       // 2. Unmatched source rows which are deleted
       // 3. Target rows which are updated
       // 4. Target rows which are deleted
-      val processedDF = addMergeJoinProcessor(spark, joinedPlan,
-        targetRowHasNoMatch = targetRowHasNoMatch,
-        sourceRowHasNoMatch = sourceRowHasNoMatch,
-        matchedConditions = matchedConditions,
-        matchedOutputs = matchedOutputs,
-        notMatchedConditions = notMatchedConditions,
-        notMatchedOutputs = notMatchedOutputs,
-        notMatchedBySourceConditions = notMatchedBySourceConditions,
-        notMatchedBySourceOutputs = notMatchedBySourceOutputs)
-        .localCheckpoint(true)
+//      val processedDF = addMergeJoinProcessor(spark, joinedPlan,
+//        targetRowHasNoMatch = targetRowHasNoMatch,
+//        sourceRowHasNoMatch = sourceRowHasNoMatch,
+//        matchedConditions = matchedConditions,
+//        matchedOutputs = matchedOutputs,
+//        notMatchedConditions = notMatchedConditions,
+//        notMatchedOutputs = notMatchedOutputs,
+//        notMatchedBySourceConditions = notMatchedBySourceConditions,
+//        notMatchedBySourceOutputs = notMatchedBySourceOutputs)
+//        .localCheckpoint(true)
+
+      val processedDF = addMergeJoinProcessor2(spark, joinedPlan,
+        sourceRowHasNoMatch,
+        matchedConditions,
+        matchedOutputs,
+        notMatchedConditions,
+        notMatchedOutputs).localCheckpoint(true)
       
 
 
@@ -1116,6 +1123,54 @@ object GpuLowShuffleMergeCommand {
 
       Dataset.ofRows(spark, joinedPlan)
         .mapPartitions(processor.processPartition)(processedRowEncoder)
+    }
+
+    private def addMergeJoinProcessor2(
+        spark: SparkSession,
+        joinedPlan: LogicalPlan,
+        sourceRowHasNoMatch: Expression,
+        matchedConditions: Seq[Expression],
+        matchedOutputs: Seq[Seq[Seq[Expression]]],
+        notMatchedConditions: Seq[Expression],
+        notMatchedOutputs: Seq[Seq[Seq[Expression]]])
+    : Dataset[Row] = {
+
+      val matchedOutputs2 = matchedOutputs.map(_.head)
+      val notMatchedOutputs2 = notMatchedOutputs.map(_.head)
+
+      val processedRowSchema = outputRowSchema
+        .add(ROW_DROPPED_FIELD)
+        .add(ROW_MATCHED_FIELD)
+        .add(METADATA_ROW_IDX_FIELD.copy(nullable = true))
+        .add(FILE_PATH_FIELD.copy(nullable = true))
+
+      val notMatchedExpr = processedRowSchema.zipWithIndex.map { case (_, idx) =>
+        CaseWhen(notMatchedConditions.zip(notMatchedOutputs2.init.map(_(idx))),
+          notMatchedOutputs2.last(idx))
+      }
+
+      val matchedExprs = processedRowSchema.zipWithIndex.map { case (_, idx) =>
+        CaseWhen(matchedConditions.zip(matchedOutputs2.init.map(_(idx))),
+          matchedOutputs2.last(idx))
+      }
+
+      val processedCols = processedRowSchema.zipWithIndex.map { case (col, idx) =>
+        val caseWhen = CaseWhen(
+          Seq(
+            sourceRowHasNoMatch -> notMatchedExpr(idx)),
+             matchedExprs(idx))
+          Column(Alias(caseWhen, col.name)())
+      }
+
+      val processedDF = Dataset.ofRows(spark, joinedPlan)
+        .select(processedCols:_*)
+
+      logInfo(
+        s"""ProcessedDF: \n ${processedDF.explain(true)}
+           |ProcessedDF plan schema: ${processedDF.queryExecution.analyzed.schema}
+           |""".stripMargin)
+
+      processedDF
     }
 
     private def addRepartitionByFilePath(input: DataFrame): DataFrame = {
