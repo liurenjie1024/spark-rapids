@@ -34,17 +34,17 @@ import com.databricks.sql.transaction.tahoe.rapids.GpuLowShuffleMergeCommand.{In
 import com.databricks.sql.transaction.tahoe.schema.ImplicitMetadataOperation
 import com.databricks.sql.transaction.tahoe.sources.DeltaSQLConf
 import com.databricks.sql.transaction.tahoe.util.{AnalysisHelper, SetAccumulator}
-import com.nvidia.spark.rapids.{BaseExprMeta, GpuOverrides, RapidsConf}
+import com.nvidia.spark.rapids.{GpuOverrides, RapidsConf}
 import com.nvidia.spark.rapids.delta._
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.{FILE_PATH_FIELD, METADATA_ROW_IDX_COL, METADATA_ROW_IDX_FIELD}
-
 import org.apache.spark.SparkContext
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.catalyst.encoders.{ExpressionEncoder, RowEncoder}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, BasePredicate, Expression, Literal, NamedExpression, PredicateHelper, UnsafeProjection}
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, BasePredicate, CaseWhen, Expression, Literal, NamedExpression, PredicateHelper, UnsafeProjection}
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.expressions.codegen.GeneratePredicate
 import org.apache.spark.sql.catalyst.plans.logical.{DeltaMergeAction, DeltaMergeIntoClause, DeltaMergeIntoMatchedClause, DeltaMergeIntoMatchedDeleteClause, DeltaMergeIntoMatchedUpdateClause, DeltaMergeIntoNotMatchedBySourceClause, DeltaMergeIntoNotMatchedBySourceDeleteClause, DeltaMergeIntoNotMatchedBySourceUpdateClause, DeltaMergeIntoNotMatchedClause, DeltaMergeIntoNotMatchedInsertClause, LogicalPlan, Project}
@@ -1155,7 +1155,7 @@ object GpuLowShuffleMergeCommand {
           Seq(
             sourceRowHasNoMatch -> notMatchedExpr(idx)),
              matchedExprs(idx))
-          Column(Alias(caseWhen, col.name)())
+          new Column(caseWhen).as(col.name)
       }
 
       val processedDF = Dataset.ofRows(spark, joinedPlan)
