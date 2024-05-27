@@ -706,8 +706,8 @@ object GpuLowShuffleMergeCommand {
            |  newTarget.output: ${joinedDF.queryExecution.logical.outputSet}
        """.stripMargin)
 
-      val targetRowHasNoMatch = resolveOnJoinedPlan(Seq(
-        col(SOURCE_ROW_PRESENT_COL).isNull.expr)).head
+//      val targetRowHasNoMatch = resolveOnJoinedPlan(Seq(
+//        col(SOURCE_ROW_PRESENT_COL).isNull.expr)).head
       val sourceRowHasNoMatch = resolveOnJoinedPlan(Seq(
         col(TARGET_ROW_PRESENT_COL).isNull.expr))
         .head
@@ -715,8 +715,8 @@ object GpuLowShuffleMergeCommand {
       val matchedOutputs = cmd.matchedClauses.map(clauseOutput)
       val notMatchedConditions = cmd.notMatchedClauses.map(clauseCondition)
       val notMatchedOutputs = cmd.notMatchedClauses.map(clauseOutput)
-      val notMatchedBySourceConditions = cmd.notMatchedBySourceClauses.map(clauseCondition)
-      val notMatchedBySourceOutputs = cmd.notMatchedBySourceClauses.map(clauseOutput)
+//      val notMatchedBySourceConditions = cmd.notMatchedBySourceClauses.map(clauseCondition)
+//      val notMatchedBySourceOutputs = cmd.notMatchedBySourceClauses.map(clauseOutput)
 
       // Schema of processedDF:
       // targetSchema + ROW_DROPPED_COL + ROW_MATCHED_COL + ROW_ID_COL + FILE_PATH_COL
@@ -1055,75 +1055,75 @@ object GpuLowShuffleMergeCommand {
       GpuOverrides.wrapExpr(e, cmd.rapidsConf, None)
     }
 
-    private def addMergeJoinProcessor(
-        spark: SparkSession,
-        joinedPlan: LogicalPlan,
-        targetRowHasNoMatch: Expression,
-        sourceRowHasNoMatch: Expression,
-        matchedConditions: Seq[Expression],
-        matchedOutputs: Seq[Seq[Seq[Expression]]],
-        notMatchedConditions: Seq[Expression],
-        notMatchedOutputs: Seq[Seq[Seq[Expression]]],
-        notMatchedBySourceConditions: Seq[Expression],
-        notMatchedBySourceOutputs: Seq[Seq[Seq[Expression]]])
-    : Dataset[Row] = {
-
-      val targetRowHasNoMatchMeta = wrap(targetRowHasNoMatch)
-      val sourceRowHasNoMatchMeta = wrap(sourceRowHasNoMatch)
-      val matchedConditionsMetas = matchedConditions.map(wrap)
-      val matchedOutputsMetas = matchedOutputs.map(_.map(_.map(wrap)))
-      val notMatchedConditionsMetas = notMatchedConditions.map(wrap)
-      val notMatchedOutputsMetas = notMatchedOutputs.map(_.map(_.map(wrap)))
-      val notMatchedBySourceConditionsMetas = notMatchedBySourceConditions.map(wrap)
-      val notMatchedBySourceOutputsMetas = notMatchedBySourceOutputs.map(_.map(_.map(wrap)))
-      val allMetas = Seq(targetRowHasNoMatchMeta, sourceRowHasNoMatchMeta) ++
-        matchedConditionsMetas ++ matchedOutputsMetas.flatten.flatten ++
-        notMatchedConditionsMetas ++ notMatchedOutputsMetas.flatten.flatten ++
-        notMatchedBySourceConditionsMetas ++ notMatchedBySourceOutputsMetas.flatten.flatten
-
-      allMetas.foreach(_.tagForGpu())
-      val canReplace = allMetas.forall(_.canExprTreeBeReplaced) && cmd.rapidsConf.isOperatorEnabled(
-        "spark.rapids.sql.exec.RapidsProcessDeltaMergeJoinExec", false, false)
-      if (cmd.rapidsConf.shouldExplainAll || (cmd.rapidsConf.shouldExplain && !canReplace)) {
-        val exprExplains = allMetas.map(_.explain(cmd.rapidsConf.shouldExplainAll))
-        val execWorkInfo = if (canReplace) {
-          "will run on GPU"
-        } else {
-          "cannot run on GPU because not all merge processing expressions can be replaced"
-        }
-        logWarning(s"<RapidsProcessDeltaMergeJoinExec> $execWorkInfo:\n" +
-          s"  ${exprExplains.mkString("  ")}")
-      }
-
-      logDebug(
-        s"""Joined plan: \n ${joinedDF.explain(true)}
-           |Joined plan schema: ${joinedPlan.schema}
-           |""".stripMargin)
-      val joinedRowEncoder = RowEncoder(joinedPlan.schema)
-      val processedRowSchema = outputRowSchema
-        .add(ROW_DROPPED_FIELD)
-        .add(ROW_MATCHED_FIELD)
-        .add(METADATA_ROW_IDX_FIELD.copy(nullable = true))
-        .add(FILE_PATH_FIELD.copy(nullable = true))
-
-      val processedRowEncoder = RowEncoder(processedRowSchema).resolveAndBind()
-
-      val processor = new JoinedRowProcessor(
-        targetRowHasNoMatch = targetRowHasNoMatch,
-        sourceRowHasNoMatch = sourceRowHasNoMatch,
-        matchedConditions = matchedConditions,
-        matchedOutputs = matchedOutputs,
-        notMatchedConditions = notMatchedConditions,
-        notMatchedOutputs = notMatchedOutputs,
-        notMatchedBySourceConditions = cmd.notMatchedBySourceClauses.map(clauseCondition),
-        notMatchedBySourceOutputs = cmd.notMatchedBySourceClauses.map(clauseOutput),
-        joinedAttributes = joinedPlan.output,
-        joinedRowEncoder = joinedRowEncoder,
-        processedRowEncoder = processedRowEncoder)
-
-      Dataset.ofRows(spark, joinedPlan)
-        .mapPartitions(processor.processPartition)(processedRowEncoder)
-    }
+//    private def addMergeJoinProcessor(
+//        spark: SparkSession,
+//        joinedPlan: LogicalPlan,
+//        targetRowHasNoMatch: Expression,
+//        sourceRowHasNoMatch: Expression,
+//        matchedConditions: Seq[Expression],
+//        matchedOutputs: Seq[Seq[Seq[Expression]]],
+//        notMatchedConditions: Seq[Expression],
+//        notMatchedOutputs: Seq[Seq[Seq[Expression]]],
+//        notMatchedBySourceConditions: Seq[Expression],
+//        notMatchedBySourceOutputs: Seq[Seq[Seq[Expression]]])
+//    : Dataset[Row] = {
+//
+//      val targetRowHasNoMatchMeta = wrap(targetRowHasNoMatch)
+//      val sourceRowHasNoMatchMeta = wrap(sourceRowHasNoMatch)
+//      val matchedConditionsMetas = matchedConditions.map(wrap)
+//      val matchedOutputsMetas = matchedOutputs.map(_.map(_.map(wrap)))
+//      val notMatchedConditionsMetas = notMatchedConditions.map(wrap)
+//      val notMatchedOutputsMetas = notMatchedOutputs.map(_.map(_.map(wrap)))
+//      val notMatchedBySourceConditionsMetas = notMatchedBySourceConditions.map(wrap)
+//      val notMatchedBySourceOutputsMetas = notMatchedBySourceOutputs.map(_.map(_.map(wrap)))
+//      val allMetas = Seq(targetRowHasNoMatchMeta, sourceRowHasNoMatchMeta) ++
+//        matchedConditionsMetas ++ matchedOutputsMetas.flatten.flatten ++
+//        notMatchedConditionsMetas ++ notMatchedOutputsMetas.flatten.flatten ++
+//        notMatchedBySourceConditionsMetas ++ notMatchedBySourceOutputsMetas.flatten.flatten
+//
+//      allMetas.foreach(_.tagForGpu())
+//      val canReplace = allMetas.forall(_.canExprTreeBeReplaced) && cmd.rapidsConf.isOperatorEnabled(
+//        "spark.rapids.sql.exec.RapidsProcessDeltaMergeJoinExec", false, false)
+//      if (cmd.rapidsConf.shouldExplainAll || (cmd.rapidsConf.shouldExplain && !canReplace)) {
+//        val exprExplains = allMetas.map(_.explain(cmd.rapidsConf.shouldExplainAll))
+//        val execWorkInfo = if (canReplace) {
+//          "will run on GPU"
+//        } else {
+//          "cannot run on GPU because not all merge processing expressions can be replaced"
+//        }
+//        logWarning(s"<RapidsProcessDeltaMergeJoinExec> $execWorkInfo:\n" +
+//          s"  ${exprExplains.mkString("  ")}")
+//      }
+//
+//      logDebug(
+//        s"""Joined plan: \n ${joinedDF.explain(true)}
+//           |Joined plan schema: ${joinedPlan.schema}
+//           |""".stripMargin)
+//      val joinedRowEncoder = RowEncoder(joinedPlan.schema)
+//      val processedRowSchema = outputRowSchema
+//        .add(ROW_DROPPED_FIELD)
+//        .add(ROW_MATCHED_FIELD)
+//        .add(METADATA_ROW_IDX_FIELD.copy(nullable = true))
+//        .add(FILE_PATH_FIELD.copy(nullable = true))
+//
+//      val processedRowEncoder = RowEncoder(processedRowSchema).resolveAndBind()
+//
+//      val processor = new JoinedRowProcessor(
+//        targetRowHasNoMatch = targetRowHasNoMatch,
+//        sourceRowHasNoMatch = sourceRowHasNoMatch,
+//        matchedConditions = matchedConditions,
+//        matchedOutputs = matchedOutputs,
+//        notMatchedConditions = notMatchedConditions,
+//        notMatchedOutputs = notMatchedOutputs,
+//        notMatchedBySourceConditions = cmd.notMatchedBySourceClauses.map(clauseCondition),
+//        notMatchedBySourceOutputs = cmd.notMatchedBySourceClauses.map(clauseOutput),
+//        joinedAttributes = joinedPlan.output,
+//        joinedRowEncoder = joinedRowEncoder,
+//        processedRowEncoder = processedRowEncoder)
+//
+//      Dataset.ofRows(spark, joinedPlan)
+//        .mapPartitions(processor.processPartition)(processedRowEncoder)
+//    }
 
     private def addMergeJoinProcessor2(
         spark: SparkSession,
