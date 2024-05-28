@@ -26,7 +26,7 @@ delta_merge_enabled_conf = copy_and_update(delta_writes_enabled_conf,
                             "spark.rapids.sql.delta.lowShuffleMerge.enabled": "true",
                             "spark.rapids.sql.format.parquet.reader.type": "PERFILE"})
 
-@allow_non_gpu("RapidsRepartitionByFilePathExec", *delta_meta_allow)
+@allow_non_gpu("ColumnarToRowExec", *delta_meta_allow)
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not ((is_databricks_runtime() and is_databricks133_or_later()) or
@@ -45,7 +45,10 @@ def test_delta_low_shuffle_merge_when_gpu_file_scan_override_failed(spark_tmp_pa
                 " WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *"
 
     conf = copy_and_update(delta_merge_enabled_conf,
-                           {"spark.rapids.sql.exec.RapidsRepartitionByFilePathExec": "false"})
+                           {
+                               "spark.rapids.sql.exec.FileSourceScanExec": "false",
+                               "spark.sql.autoBroadcastJoinThreshold": "-1"
+                            })
     assert_delta_sql_merge_collect(spark_tmp_path, spark_tmp_table_factory, use_cdf,
                                    src_table_func, dest_table_func, merge_sql, False, conf=conf)
 
@@ -157,3 +160,4 @@ def test_delta_merge_upsert_with_unmatchable_match_condition(spark_tmp_path, spa
 def test_delta_merge_update_with_aggregation(spark_tmp_path, spark_tmp_table_factory, use_cdf):
     do_test_delta_merge_update_with_aggregation(spark_tmp_path, spark_tmp_table_factory, use_cdf,
                                                 delta_merge_enabled_conf)
+

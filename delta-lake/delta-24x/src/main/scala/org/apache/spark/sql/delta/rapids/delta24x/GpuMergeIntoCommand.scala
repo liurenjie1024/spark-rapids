@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2024, NVIDIA CORPORATION.
  *
  * This file was derived from MergeIntoCommand.scala
  * in the Delta Lake project at https://github.com/delta-io/delta.
@@ -552,7 +552,7 @@ case class GpuMergeIntoCommand(
 
     // Get the AddFiles using the touched file names.
     val touchedFileNames = touchedFilesAccum.value.iterator().asScala.toSeq
-    logTrace(s"findTouchedFiles: matched files:\n\t${touchedFileNames.mkString("\n\t")}")
+    logWarning(s"findTouchedFiles: matched files:\n\t${touchedFileNames.mkString("\n\t")}")
 
     val nameToAddFileMap = generateCandidateFileMap(targetDeltaLog.dataPath, dataSkippedFiles)
     val touchedAddFiles = touchedFileNames.map(f =>

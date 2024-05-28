@@ -16,7 +16,9 @@
 
 package com.nvidia.spark.rapids.delta
 
-import com.nvidia.spark.rapids.{GpuMetric, GpuParquetMultiFilePartitionReaderFactory, GpuReadParquetFileFormat}
+import java.net.URI
+
+import com.nvidia.spark.rapids.{GpuMetric, GpuParquetMultiFilePartitionReaderFactory, GpuReadParquetFileFormat, RapidsConf}
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.addMetadataColumnToIterator
 import org.apache.hadoop.conf.Configuration
 
@@ -25,6 +27,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.connector.read.PartitionReaderFactory
 import org.apache.spark.sql.delta.{DeltaColumnMapping, DeltaColumnMappingMode, NoMapping}
+import org.apache.spark.sql.delta.DeltaParquetFileFormat.DeletionVectorDescriptorWithFilterType
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.rapids.GpuFileSourceScanExec
 import org.apache.spark.sql.sources.Filter
@@ -35,6 +38,8 @@ import org.apache.spark.util.SerializableConfiguration
 trait GpuDeltaParquetFileFormat extends GpuReadParquetFileFormat {
   val columnMappingMode: DeltaColumnMappingMode
   val referenceSchema: StructType
+  val disablePushDown: Boolean
+  val broadcastDvMap: Option[Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]]]
 
 
   def prepareSchema(inputSchema: StructType): StructType = {
@@ -80,16 +85,25 @@ trait GpuDeltaParquetFileFormat extends GpuReadParquetFileFormat {
       preparedDataSchema,
       preparedPartitionSchema,
       preparedRequiredSchema,
-      filters,
+      if (disablePushDown) Seq.empty else filters,
       options,
       hadoopConf,
       metrics,
       alluxioPathReplacementMap)
 
+    val delVecs = broadcastDvMap
+    val maxDelVecScatterBatchSize = RapidsConf
+      .DELTA_LOW_SHUFFLE_MERGE_SCATTER_DEL_VECTOR_BATCH_SIZE
+      .get(sparkSession.sessionState.conf)
+
     (file: PartitionedFile) => {
       val input = dataReader(file)
+      val dv = delVecs.flatMap(_.value.get(new URI(file.filePath.toString())))
+        .map(dv => RoaringBitmapWrapper.deserializeFromBytes(dv.descriptor.inlineData).inner)
       addMetadataColumnToIterator(preparedRequiredSchema,
-        input.asInstanceOf[Iterator[ColumnarBatch]])
+        dv,
+        input.asInstanceOf[Iterator[ColumnarBatch]],
+        maxDelVecScatterBatchSize)
         .asInstanceOf[Iterator[InternalRow]]
     }
   }

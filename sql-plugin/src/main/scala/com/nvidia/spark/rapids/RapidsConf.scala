@@ -2202,19 +2202,25 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
       .integerConf
       .createWithDefault(1024)
 
-  val FORCE_ONE_FILE_PER_PARITION =
-    conf("spark.rapids.sql.scan.forceOneFilePerPartition")
-    .doc("When true, forces the plugin have only one file per partitioning for " +
-      "all file based data sources.")
-    .internal()
-    .booleanConf
-    .createWithDefault(false)
-
   val ENABLE_DELTA_LOW_SHUFFLE_MERGE =
     conf("spark.rapids.sql.delta.lowShuffleMerge.enabled")
     .doc("Option to turn on the low shuffle merge for Delta Lake.")
     .booleanConf
     .createWithDefault(false)
+
+  val DELTA_LOW_SHUFFLE_MERGE_SCATTER_DEL_VECTOR_BATCH_SIZE =
+    conf("spark.rapids.sql.delta.lowShuffleMerge.deletion.scatter.max.size")
+    .doc("Option to set max batch size when scattering deletion vector")
+    .integerConf
+    .createWithDefault(4096)
+
+  val DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_MAX_COUNT =
+    conf("spark.rapids.sql.delta.lowShuffleMerge.deletionVector.broadcast.max.count")
+    .doc("Option to set max broadcast count of low shuffle merge deletion vector. If the " +
+        "detected deletion vector row count is larger than this value, low shuffle merge will be " +
+        "disabled.")
+    .longConf
+    .createWithDefault(600000000)
 
   private def printSectionHeader(category: String): Unit =
     println(s"\n### $category")
@@ -2441,8 +2447,6 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   lazy val concurrentGpuTasks: Int = get(CONCURRENT_GPU_TASKS)
 
   lazy val isTestEnabled: Boolean = get(TEST_CONF)
-
-  lazy val forceOneFilePerPartition: Boolean = get(FORCE_ONE_FILE_PER_PARITION)
 
   /**
    * Convert a string value to the injection configuration OomInjection.

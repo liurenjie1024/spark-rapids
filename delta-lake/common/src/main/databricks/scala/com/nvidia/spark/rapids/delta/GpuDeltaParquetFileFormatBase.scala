@@ -16,8 +16,11 @@
 
 package com.nvidia.spark.rapids.delta
 
+import java.net.URI
+
 import com.databricks.sql.transaction.tahoe.{DeltaColumnMapping, DeltaColumnMappingMode, NoMapping}
-import com.nvidia.spark.rapids.{GpuMetric, GpuParquetMultiFilePartitionReaderFactory, GpuReadParquetFileFormat}
+import com.databricks.sql.transaction.tahoe.DeltaParquetFileFormat.DeletionVectorDescriptorWithFilterType
+import com.nvidia.spark.rapids.{GpuMetric, GpuParquetMultiFilePartitionReaderFactory, GpuReadParquetFileFormat, RapidsConf}
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.addMetadataColumnToIterator
 import org.apache.hadoop.conf.Configuration
 
@@ -35,6 +38,8 @@ import org.apache.spark.util.SerializableConfiguration
 abstract class GpuDeltaParquetFileFormatBase extends GpuReadParquetFileFormat {
   val columnMappingMode: DeltaColumnMappingMode
   val referenceSchema: StructType
+  val disablePushDown: Boolean
+  val broadcastDvMap: Option[Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]]]
 
   def prepareSchema(inputSchema: StructType): StructType = {
     DeltaColumnMapping.createPhysicalSchema(inputSchema, referenceSchema, columnMappingMode)
@@ -85,11 +90,20 @@ abstract class GpuDeltaParquetFileFormatBase extends GpuReadParquetFileFormat {
       metrics,
       alluxioPathReplacementMap)
 
+    val delVecs = broadcastDvMap
+    val maxDelVecScatterBatchSize = RapidsConf
+      .DELTA_LOW_SHUFFLE_MERGE_SCATTER_DEL_VECTOR_BATCH_SIZE
+      .get(sparkSession.sessionState.conf)
+
     (file: PartitionedFile) => {
       val input = dataReader(file)
+      val dv = delVecs.flatMap(_.value.get(new URI(file.filePath.toString())))
+        .map(dv => RoaringBitmapWrapper.deserializeFromBytes(dv.descriptor.inlineData).inner)
       addMetadataColumnToIterator(preparedRequiredSchema,
-        input.asInstanceOf[Iterator[ColumnarBatch]])
-        .asInstanceOf[Iterator[InternalRow]]
+        dv,
+        input.asInstanceOf[Iterator[ColumnarBatch]],
+        maxDelVecScatterBatchSize
+      ).asInstanceOf[Iterator[InternalRow]]
     }
   }
 

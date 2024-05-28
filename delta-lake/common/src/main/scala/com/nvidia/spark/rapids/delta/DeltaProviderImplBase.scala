@@ -34,16 +34,11 @@ abstract class DeltaProviderImplBase extends DeltaProvider {
         "GPU write into a Delta Lake table",
         ExecChecks.hiddenHack(),
         (wrapped, conf, p, r) => new RapidsDeltaWriteExecMeta(wrapped, conf, p, r)).invisible(),
-      GpuOverrides.exec[RapidsRepartitionByFilePathExec](
-        "GPU scan parquet file for with metadata column such as file_path, row_id",
-        ExecChecks.hiddenHack(),
-        (wrapped, conf, p, r) => new RapidsRepartitionByFilePathExecMeta(wrapped, conf, p, r)),
     ).collect { case r if r != null => (r.getClassFor.asSubclass(classOf[SparkPlan]), r) }.toMap
   }
 
   override def getStrategyRules: Seq[Strategy] = Seq(
     RapidsProcessDeltaMergeJoinStrategy,
-    RapidsDeltaWriteStrategy,
-    RapidsRepartitionByFilePathStrategy,
+    RapidsDeltaWriteStrategy
   )
 }

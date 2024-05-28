@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2024, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,18 +16,25 @@
 
 package com.nvidia.spark.rapids.delta.delta24x
 
+import java.net.URI
+
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormat
 import org.apache.hadoop.fs.Path
 
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.delta.{DeltaColumnMappingMode, IdMapping}
+import org.apache.spark.sql.delta.DeltaParquetFileFormat.DeletionVectorDescriptorWithFilterType
 import org.apache.spark.sql.delta.actions.Metadata
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 case class GpuDelta24xParquetFileFormat(
     metadata: Metadata,
-    isSplittable: Boolean) extends GpuDeltaParquetFileFormat {
+    isSplittable: Boolean,
+    disablePushDown: Boolean,
+    broadcastDvMap: Option[Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]]])
+  extends GpuDeltaParquetFileFormat {
 
   override val columnMappingMode: DeltaColumnMappingMode = metadata.columnMappingMode
   override val referenceSchema: StructType = metadata.schema

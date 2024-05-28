@@ -16,12 +16,14 @@
 
 package com.nvidia.spark.rapids.delta
 
-import ai.rapids.cudf.{ColumnVector => CudfColumnVector, Scalar}
+import ai.rapids.cudf.{ColumnVector => CudfColumnVector, Scalar, Table}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.GpuColumnVector
+import org.roaringbitmap.longlong.{PeekableLongIterator, Roaring64Bitmap}
 
-import org.apache.spark.sql.types.{LongType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{BooleanType, LongType, StringType, StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+
 
 object GpuDeltaParquetFileFormatUtils {
   /**
@@ -32,6 +34,11 @@ object GpuDeltaParquetFileFormatUtils {
   val METADATA_ROW_IDX_COL: String = "__metadata_row_index"
   val METADATA_ROW_IDX_FIELD: StructField = StructField(METADATA_ROW_IDX_COL, LongType,
     nullable = false)
+
+  val METADATA_ROW_DEL_COL: String = "__metadata_row_del"
+  val METADATA_ROW_DEL_FIELD: StructField = StructField(METADATA_ROW_DEL_COL, BooleanType,
+    nullable = false)
+
 
   /**
    * File path of the file that the row came from.
@@ -44,45 +51,109 @@ object GpuDeltaParquetFileFormatUtils {
    */
   def addMetadataColumnToIterator(
       schema: StructType,
-      input: Iterator[ColumnarBatch]): Iterator[ColumnarBatch] = {
+      delVector: Option[Roaring64Bitmap],
+      input: Iterator[ColumnarBatch],
+      maxBatchSize: Int): Iterator[ColumnarBatch] = {
     val metadataRowIndexCol = schema.fieldNames.indexOf(METADATA_ROW_IDX_COL)
-    if (metadataRowIndexCol == -1) {
+    val delRowIdx = schema.fieldNames.indexOf(METADATA_ROW_DEL_COL)
+    if (metadataRowIndexCol == -1 && delRowIdx == -1) {
       return input
     }
     var rowIndex = 0L
     input.map { batch =>
       withResource(batch) { _ =>
-        val newBatch = addRowIdxColumn(metadataRowIndexCol, rowIndex, batch)
+        val rowIdxCol = if (metadataRowIndexCol == -1) {
+          None
+        } else {
+          Some(metadataRowIndexCol)
+        }
+
+        val delRowIdx2 = if (delRowIdx == -1) {
+          None
+        } else {
+          Some(delRowIdx)
+        }
+        val newBatch = addMetadataColumns(rowIdxCol, delRowIdx2, delVector,maxBatchSize,
+          rowIndex, batch)
         rowIndex += batch.numRows()
         newBatch
       }
     }
   }
 
-  private def addRowIdxColumn(
-      rowIdxPos: Int,
+  private def addMetadataColumns(
+      rowIdxPos: Option[Int],
+      delRowIdx: Option[Int],
+      delVec: Option[Roaring64Bitmap],
+      maxBatchSize: Int,
       rowIdxStart: Long,
       batch: ColumnarBatch): ColumnarBatch = {
-    val rowIdxCol = withResource(Scalar.fromLong(rowIdxStart)) { start =>
-      GpuColumnVector.from(CudfColumnVector.sequence(start, batch.numRows()),
-        METADATA_ROW_IDX_FIELD.dataType)
+    val rowIdxCol = rowIdxPos.map { _ =>
+      withResource(Scalar.fromLong(rowIdxStart)) { start =>
+        GpuColumnVector.from(CudfColumnVector.sequence(start, batch.numRows()),
+          METADATA_ROW_IDX_FIELD.dataType)
+      }
     }
 
-    closeOnExcept(rowIdxCol) { rowIdxCol =>
-      // Replace row_idx column
-      val columns = new Array[ColumnVector](batch.numCols())
-      for (i <- 0 until batch.numCols()) {
-        if (i == rowIdxPos) {
-          columns(i) = rowIdxCol
-        } else {
-          columns(i) = batch.column(i) match {
-            case gpuCol: GpuColumnVector => gpuCol.incRefCount()
-            case col => col
+    val delVecCol = delVec.map { delVec =>
+      withResource(Scalar.fromBool(false)) { s =>
+        withResource(CudfColumnVector.fromScalar(s, batch.numRows())) { c =>
+          var table = new Table(c)
+          val posIter = new RoaringBitmapIterator(
+            delVec.getLongIteratorFrom(rowIdxStart),
+            rowIdxStart,
+            rowIdxStart + batch.numRows(),
+          ).grouped(Math.min(maxBatchSize, batch.numRows()))
+
+          for (posChunk <- posIter) {
+            withResource(CudfColumnVector.fromLongs(posChunk: _*)) { poses =>
+              withResource(Scalar.fromBool(true)) { s =>
+                withResource(table) { _ =>
+                  val newTable = Table.scatter(Array(s), poses, table)
+                  table = newTable
+                }
+              }
+            }
+          }
+
+          withResource(table) { _ =>
+            GpuColumnVector.from(table.getColumn(0).incRefCount(), METADATA_ROW_DEL_FIELD.dataType)
           }
         }
       }
-
-      new ColumnarBatch(columns, batch.numRows())
     }
+
+    closeOnExcept(rowIdxCol) { rowIdxCol =>
+      closeOnExcept(delVecCol) { delVecCol =>
+        // Replace row_idx column
+        val columns = new Array[ColumnVector](batch.numCols())
+        for (i <- 0 until batch.numCols()) {
+          if (rowIdxPos.isDefined && i == rowIdxPos.get) {
+            columns(i) = rowIdxCol.get
+          } else if (delRowIdx.isDefined && i == delRowIdx.get) {
+            columns(i) = delVecCol.get
+          } else {
+            columns(i) = batch.column(i) match {
+              case gpuCol: GpuColumnVector => gpuCol.incRefCount()
+              case col => col
+            }
+          }
+        }
+
+        new ColumnarBatch(columns, batch.numRows())
+      }
+    }
+  }
+}
+
+class RoaringBitmapIterator(val inner: PeekableLongIterator, val start: Long, val end: Long)
+  extends Iterator[Long] {
+
+  override def hasNext: Boolean = {
+    inner.hasNext && inner.peekNext() < end
+  }
+
+  override def next(): Long = {
+    inner.next() - start
   }
 }

@@ -104,9 +104,6 @@ case class GpuFileSourceScanExec(
   }
 
   private val isPerFileReadEnabled = gpuFormat.isPerFileReadEnabled(rapidsConf)
-  private val forceOneFilePerPartition = RapidsConf
-    .FORCE_ONE_FILE_PER_PARITION
-    .get(relation.options)
 
   override def otherCopyArgs: Seq[AnyRef] = Seq(rapidsConf)
 
@@ -557,26 +554,16 @@ case class GpuFileSourceScanExec(
       readFile: Option[(PartitionedFile) => Iterator[InternalRow]],
       selectedPartitions: Array[PartitionDirectory],
       fsRelation: HadoopFsRelation): RDD[InternalRow] = {
-    val partitions = if (forceOneFilePerPartition) {
-      logInfo("Forcing one file per partition for gpu file source scan")
-      // The one file per partition scanning strategy is currently only used by
-      // [[GpuLowShuffleMergeCommand]] to avoid shuffling the data. It's not supposed to
-      // be universally applied to all cases.
-      FilePartitionShims.getFiles(selectedPartitions)
-        .zipWithIndex.map(p => FilePartition(p._2, Array(p._1))).toSeq
-    } else {
-      val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
-      val maxSplitBytes =
-        FilePartition.maxSplitBytes(fsRelation.sparkSession, selectedPartitions)
-      logInfo(s"Planning scan with bin packing, max size: $maxSplitBytes bytes, " +
+
+    val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
+    val maxSplitBytes = FilePartition.maxSplitBytes(fsRelation.sparkSession, selectedPartitions)
+    logInfo(s"Planning scan with bin packing, max size: $maxSplitBytes bytes, " +
         s"open cost is considered as scanning $openCostInBytes bytes.")
 
-      val splitFiles = FilePartitionShims.splitFiles(selectedPartitions, relation, maxSplitBytes)
+    val splitFiles = FilePartitionShims.splitFiles(selectedPartitions, relation, maxSplitBytes)
 
-      FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
-    }
-
-
+    val partitions = FilePartition.getFilePartitions(relation.sparkSession, splitFiles,
+      maxSplitBytes)
     getFinalRDD(readFile, partitions)
   }
 
