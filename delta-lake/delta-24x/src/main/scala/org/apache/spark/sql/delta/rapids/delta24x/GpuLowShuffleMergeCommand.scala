@@ -319,7 +319,6 @@ trait MergeExecutor extends AnalysisHelper with PredicateHelper with Logging {
     }
   }
 
-
   def execute(): Seq[FileAction]
 
   protected def targetOutputCols: Seq[NamedExpression] = {
@@ -329,8 +328,7 @@ trait MergeExecutor extends AnalysisHelper with PredicateHelper with Logging {
         .map { a =>
           AttributeReference(col.name, col.dataType, col.nullable)(a.exprId)
         }
-        .getOrElse(Alias(Literal(null), col.name)()
-        )
+        .getOrElse(Alias(Literal(null), col.name)())
     }
   }
 
@@ -423,7 +421,6 @@ trait MergeExecutor extends AnalysisHelper with PredicateHelper with Logging {
     Dataset.ofRows(context.spark, context.cmd.source)
       .filter(new Column(incrSourceRowCountExpr))
   }
-
 
   /** Whether this merge statement has no insert (NOT MATCHED) clause. */
   protected def hasNoInserts: Boolean = context.cmd.notMatchedClauses.isEmpty
@@ -697,15 +694,10 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
 
     // Apply inner join to between source and target using the merge condition to find matches
     // In addition, we attach two columns
-    // - METADATA_ROW_IDX column to identify
-    //     target row is modified by multiple user or not
-    // - the target file name the row is from to later identify the files touched by matched
-    //      rows
+    // - METADATA_ROW_IDX column to identify target row in file
+    // - FILE_PATH_COL the target file name the row is from to later identify the files touched
+    // by matched rows
     val targetDF = dataSkippedTargetDF.withColumn(FILE_PATH_COL, input_file_name())
-
-    //      logWarning(
-    //        s"""FullTargetDF length: ${targetDF.collect().length}, data:
-    //           |${targetDF.collect().mkString("[\n", "\n", "\n]")}""".stripMargin)
 
     sourceDF.join(targetDF, new Column(context.cmd.condition), "inner")
   }
@@ -783,8 +775,6 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
         .map(f => (DeltaFileOperations
           .absolutePath(context.cmd.targetDeltaLog.dataPath.toString, f.path)
           .toString, f)).toMap
-
-//      logInfo(s"Value of touched add files: $touchedAddFiles")
 
       // When the target table is empty, and the optimizer optimized away the join entirely
       // numSourceRows will be incorrectly 0.
@@ -891,7 +881,6 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
     val df = Dataset.ofRows(context.spark, newPlan)
       .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
 
-    //    logDebug(s"TargetDF plan: ${df.queryExecution.analyzed}")
     df
   }
 
@@ -929,9 +918,6 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       val matchedTargetDF = targetDF.filter(METADATA_ROW_DEL_COL)
         .drop(METADATA_ROW_DEL_COL)
 
-      //      logWarning(
-      //        s"""MatchedTargetDF length: ${matchedTargetDF.collect().length}, data:
-      //           |${matchedTargetDF.collect().mkString("[\n", "\n", "\n]")}""".stripMargin)
       sourceDF.join(matchedTargetDF, new Column(context.cmd.condition), joinType)
     }
 
@@ -1026,30 +1012,13 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       repartitionIfNeeded(modifiedDF)
     }
 
-    //    logWarning(
-    //      s"""ModifiedDF: \n ${modifiedDF.queryExecution.explainString(ExtendedMode)}
-    //         |ModifiedDF plan schema: ${modifiedDF.queryExecution.analyzed.schema}
-    //         |ModifiedDF length: ${modifiedDF.collect().length}, data:
-    //         |${modifiedDF.collect().mkString("[\n", "\n", "\n]")}
-    //         |""".stripMargin)
-
-    //    logWarning(
-    //      s"""ModifiedDF: \n ${modifiedDF.queryExecution.explainString(ExtendedMode)}
-    //         |ModifiedDF plan schema: ${modifiedDF.queryExecution.analyzed.schema}
-    //         |""".stripMargin)
-
     modifiedDF
   }
 
   private def getUnmodifiedDF(touchedFiles: Map[String, (Roaring64Bitmap, AddFile)]): DataFrame = {
-    val unmodifiedDF = getTouchedTargetDF(touchedFiles)
+    getTouchedTargetDF(touchedFiles)
       .filter(!col(METADATA_ROW_DEL_COL))
       .drop(TARGET_ROW_PRESENT_COL, METADATA_ROW_DEL_COL)
-    //    logWarning(
-    //      s"""UnmodifiedDF length: ${unmodifiedDF.collect().length}, data:
-    //         |${unmodifiedDF.collect().mkString("[\n", "\n", "\n]")}""".stripMargin)
-
-    unmodifiedDF
   }
 }
 

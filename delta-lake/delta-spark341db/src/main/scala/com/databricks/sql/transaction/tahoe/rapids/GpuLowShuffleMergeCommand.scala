@@ -918,9 +918,6 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       val matchedTargetDF = targetDF.filter(METADATA_ROW_DEL_COL)
         .drop(METADATA_ROW_DEL_COL)
 
-      //      logWarning(
-      //        s"""MatchedTargetDF length: ${matchedTargetDF.collect().length}, data:
-      //           |${matchedTargetDF.collect().mkString("[\n", "\n", "\n]")}""".stripMargin)
       sourceDF.join(matchedTargetDF, new Column(context.cmd.condition), joinType)
     }
 
