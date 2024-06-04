@@ -36,7 +36,8 @@ import com.databricks.sql.transaction.tahoe.rapids.MergeExecutor.{toDeletionVect
 import com.databricks.sql.transaction.tahoe.schema.ImplicitMetadataOperation
 import com.databricks.sql.transaction.tahoe.sources.DeltaSQLConf
 import com.databricks.sql.transaction.tahoe.util.{AnalysisHelper, DeltaFileOperations}
-import com.nvidia.spark.rapids.RapidsConf
+import com.nvidia.spark.rapids.{GpuOverrides, RapidsConf}
+import com.nvidia.spark.rapids.RapidsConf.DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_MAX_COUNT
 import com.nvidia.spark.rapids.delta._
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.{METADATA_ROW_DEL_COL, METADATA_ROW_DEL_FIELD, METADATA_ROW_IDX_COL, METADATA_ROW_IDX_FIELD}
 import org.roaringbitmap.longlong.Roaring64Bitmap
@@ -49,11 +50,13 @@ import org.apache.spark.sql.catalyst.expressions.{Alias, And, Attribute, Attribu
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
 import org.apache.spark.sql.catalyst.plans.logical.{DeltaMergeAction, DeltaMergeIntoClause, DeltaMergeIntoMatchedClause, DeltaMergeIntoMatchedDeleteClause, DeltaMergeIntoMatchedUpdateClause, DeltaMergeIntoNotMatchedBySourceClause, DeltaMergeIntoNotMatchedBySourceDeleteClause, DeltaMergeIntoNotMatchedBySourceUpdateClause, DeltaMergeIntoNotMatchedClause, DeltaMergeIntoNotMatchedInsertClause, LogicalPlan, Project}
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
-import org.apache.spark.sql.execution.{ExtendedMode, SQLExecution}
+import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.rapids.GpuFileSourceScanExec
 import org.apache.spark.sql.types.{BooleanType, LongType, StringType, StructField, StructType}
 
 /**
@@ -115,7 +118,7 @@ case class GpuLowShuffleMergeCommand(
     AttributeReference("num_inserted_rows", LongType)())
 
   @transient private lazy val sc: SparkContext = SparkContext.getOrCreate()
-  @transient private[sql] lazy val targetDeltaLog: DeltaLog = gpuDeltaLog.deltaLog
+  @transient lazy val targetDeltaLog: DeltaLog = gpuDeltaLog.deltaLog
 
   override lazy val metrics = Map[String, SQLMetric](
     "numSourceRows" -> createMetric(sc, "number of source rows"),
@@ -163,7 +166,7 @@ case class GpuLowShuffleMergeCommand(
   override def run(spark: SparkSession): Seq[Row] = {
     recordDeltaOperation(targetDeltaLog, "delta.dml.lowshufflemerge") {
       val startTime = System.nanoTime()
-      gpuDeltaLog.withNewTransaction { deltaTxn =>
+      val result = gpuDeltaLog.withNewTransaction { deltaTxn =>
         if (target.schema.size != deltaTxn.metadata.schema.size) {
           throw DeltaErrors.schemaChangedSinceAnalysis(
             atAnalysis = target.schema, latestSchema = deltaTxn.metadata.schema)
@@ -176,48 +179,79 @@ case class GpuLowShuffleMergeCommand(
             isOverwriteMode = false, rearrangeOnly = false)
         }
 
-        val deltaActions = {
+
+        val (executor, fallback) = {
+          val context = MergeExecutorContext(this, spark, deltaTxn, rapidsConf)
           if (isSingleInsertOnly && spark.conf.get(DeltaSQLConf.MERGE_INSERT_ONLY_ENABLED)) {
-            new InsertOnlyMergeExecutor(MergeExecutorContext(this, spark, deltaTxn)).execute()
+            (new InsertOnlyMergeExecutor(context), false)
           } else {
-            new LowShuffleMergeExecutor(MergeExecutorContext(this, spark, deltaTxn)).execute()
+            val executor = new LowShuffleMergeExecutor(context)
+            (executor, executor.shouldFallback())
           }
         }
 
-        // Metrics should be recorded before commit (where they are written to delta logs).
-        metrics("executionTimeMs").set((System.nanoTime() - startTime) / 1000 / 1000)
-        deltaTxn.registerSQLMetrics(spark, metrics)
-
-        // This is a best-effort sanity check.
-        if (metrics("numSourceRowsInSecondScan").value >= 0 &&
-          metrics("numSourceRows").value != metrics("numSourceRowsInSecondScan").value) {
-          log.warn(s"Merge source has ${metrics("numSourceRows").value} rows in initial scan but " +
-            s"${metrics("numSourceRowsInSecondScan").value} rows in second scan")
-          if (conf.getConf(DeltaSQLConf.MERGE_FAIL_IF_SOURCE_CHANGED)) {
-            throw DeltaErrors.sourceNotDeterministicInMergeException(spark)
-          }
+        if (fallback) {
+          None
+        } else {
+          Some(runLowShuffleMerge(spark, startTime, deltaTxn, executor))
         }
-
-        deltaTxn.commit(
-          deltaActions,
-          DeltaOperations.Merge(
-            Option(condition),
-            matchedClauses.map(DeltaOperations.MergePredicate(_)),
-            notMatchedClauses.map(DeltaOperations.MergePredicate(_)),
-            // We do not support notMatchedBySourcePredicates yet and fall back to CPU
-            // See https://github.com/NVIDIA/spark-rapids/issues/8415
-            notMatchedBySourcePredicates = Seq.empty[MergePredicate]
-          ))
-
-        // Record metrics
-        val stats = GpuMergeStats.fromMergeSQLMetrics(
-          metrics, condition, matchedClauses, notMatchedClauses,
-          deltaTxn.metadata.partitionColumns.nonEmpty)
-        recordDeltaEvent(targetDeltaLog, "delta.dml.merge.stats", data = stats)
-
       }
-      spark.sharedState.cacheManager.recacheByPlan(spark, target)
+
+      result match {
+        case Some(row) => row
+        case None =>
+          // We should rollback to normal gpu
+          new GpuMergeIntoCommand(source, target, gpuDeltaLog, condition, matchedClauses,
+            notMatchedClauses, notMatchedBySourceClauses, migratedSchema)(rapidsConf)
+            .run(spark)
+      }
     }
+  }
+
+
+  private def runLowShuffleMerge(
+      spark: SparkSession,
+      startTime: Long,
+      deltaTxn: GpuOptimisticTransactionBase,
+      mergeExecutor: MergeExecutor): Seq[Row] = {
+    val deltaActions = mergeExecutor.execute()
+    // Metrics should be recorded before commit (where they are written to delta logs).
+    metrics("executionTimeMs").set((System.nanoTime() - startTime) / 1000 / 1000)
+    deltaTxn.registerSQLMetrics(spark, metrics)
+
+    // This is a best-effort sanity check.
+    if (metrics("numSourceRowsInSecondScan").value >= 0 &&
+      metrics("numSourceRows").value != metrics("numSourceRowsInSecondScan").value) {
+      log.warn(s"Merge source has ${metrics("numSourceRows").value} rows in initial scan but " +
+        s"${metrics("numSourceRowsInSecondScan").value} rows in second scan")
+      if (conf.getConf(DeltaSQLConf.MERGE_FAIL_IF_SOURCE_CHANGED)) {
+        throw DeltaErrors.sourceNotDeterministicInMergeException(spark)
+      }
+    }
+
+    deltaTxn.commit(
+      deltaActions,
+      DeltaOperations.Merge(
+        Option(condition),
+        matchedClauses.map(DeltaOperations.MergePredicate(_)),
+        notMatchedClauses.map(DeltaOperations.MergePredicate(_)),
+        // We do not support notMatchedBySourcePredicates yet and fall back to CPU
+        // See https://github.com/NVIDIA/spark-rapids/issues/8415
+        notMatchedBySourcePredicates = Seq.empty[MergePredicate]
+      ))
+
+    // Record metrics
+    val stats = GpuMergeStats.fromMergeSQLMetrics(
+      metrics,
+      condition,
+      matchedClauses,
+      notMatchedClauses,
+      deltaTxn.metadata.partitionColumns.nonEmpty)
+    recordDeltaEvent(targetDeltaLog, "delta.dml.merge.stats", data = stats)
+
+
+    spark.sharedState.cacheManager.recacheByPlan(spark, target)
+
     // This is needed to make the SQL metrics visible in the Spark UI. Also this needs
     // to be outside the recordMergeOperation because this method will update some metric.
     val executionId = spark.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
@@ -227,14 +261,13 @@ case class GpuLowShuffleMergeCommand(
       metrics("numTargetRowsDeleted").value, metrics("numTargetRowsInserted").value))
   }
 
-
   /**
    * Execute the given `thunk` and return its result while recording the time taken to do it.
    *
    * @param sqlMetricName name of SQL metric to update with the time taken by the thunk
    * @param thunk         the code to execute
    */
-  private[sql] def recordMergeOperation[A](sqlMetricName: String)(thunk: => A): A = {
+  def recordMergeOperation[A](sqlMetricName: String)(thunk: => A): A = {
     val startTimeNs = System.nanoTime()
     val r = thunk
     val timeTakenMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNs)
@@ -262,11 +295,13 @@ case class GpuLowShuffleMergeCommand(
  */
 case class MergeExecutorContext(cmd: GpuLowShuffleMergeCommand,
     spark: SparkSession,
-    deltaTxn: OptimisticTransaction)
+    deltaTxn: OptimisticTransaction,
+    rapidsConf: RapidsConf)
 
 trait MergeExecutor extends AnalysisHelper with PredicateHelper with Logging {
 
   val context: MergeExecutorContext
+
 
   /**
    * Map to get target output attributes by name.
@@ -476,28 +511,147 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
   // We over-count numTargetRowsDeleted when there are multiple matches;
   // this is the amount of the overcount, so we can subtract it to get a correct final metric.
   private var multipleMatchDeleteOnlyOvercount: Option[Long] = None
-  private val filesToRewrite: Map[String, (Roaring64Bitmap, AddFile)] = this.findTouchedFiles()
-
 
   // UDFs to update metrics
-  private val incrSourceRowCountExpr = context.cmd.makeMetricUpdateUDF("numSourceRowsInSecondScan")
-  private val incrUpdatedCountExpr = context.cmd.makeMetricUpdateUDF("numTargetRowsUpdated")
-  private val incrUpdatedMatchedCountExpr = context.cmd.makeMetricUpdateUDF(
-    "numTargetRowsMatchedUpdated")
-  private val incrUpdatedNotMatchedBySourceCountExpr = context.cmd.makeMetricUpdateUDF(
-    "numTargetRowsNotMatchedBySourceUpdated")
-  private val incrInsertedCountExpr = context.cmd.makeMetricUpdateUDF("numTargetRowsInserted")
-  private val incrDeletedCountExpr = context.cmd.makeMetricUpdateUDF("numTargetRowsDeleted")
-  private val incrDeletedMatchedCountExpr = context.cmd.makeMetricUpdateUDF(
-    "numTargetRowsMatchedDeleted")
-  private val incrDeletedNotMatchedBySourceCountExpr = context.cmd.makeMetricUpdateUDF(
-    "numTargetRowsNotMatchedBySourceDeleted")
+  private val incrSourceRowCountExpr: Expression = context.cmd.
+    makeMetricUpdateUDF("numSourceRowsInSecondScan")
+  private val incrUpdatedCountExpr: Expression = context.cmd
+    .makeMetricUpdateUDF("numTargetRowsUpdated")
+  private val incrUpdatedMatchedCountExpr: Expression = context.cmd
+    .makeMetricUpdateUDF("numTargetRowsMatchedUpdated")
+  private val incrUpdatedNotMatchedBySourceCountExpr: Expression = context.cmd
+    .makeMetricUpdateUDF("numTargetRowsNotMatchedBySourceUpdated")
+  private val incrInsertedCountExpr: Expression = context.cmd
+    .makeMetricUpdateUDF("numTargetRowsInserted")
+  private val incrDeletedCountExpr: Expression = context.cmd
+    .makeMetricUpdateUDF("numTargetRowsDeleted")
+  private val incrDeletedMatchedCountExpr: Expression = context.cmd
+    .makeMetricUpdateUDF("numTargetRowsMatchedDeleted")
+  private val incrDeletedNotMatchedBySourceCountExpr: Expression = context.cmd
+    .makeMetricUpdateUDF("numTargetRowsNotMatchedBySourceDeleted")
+
+  private def updateOutput(resolvedActions: Seq[DeltaMergeAction], incrExpr: Expression)
+  : Seq[Expression] = {
+    resolvedActions.map(_.expr) :+
+      Literal.FalseLiteral :+
+      UnresolvedAttribute(TARGET_ROW_PRESENT_COL) :+
+      UnresolvedAttribute(SOURCE_ROW_PRESENT_COL) :+
+      incrExpr
+  }
+
+  private def deleteOutput(incrExpr: Expression): Seq[Expression] = {
+    targetOutputCols :+
+      TrueLiteral :+
+      UnresolvedAttribute(TARGET_ROW_PRESENT_COL) :+
+      UnresolvedAttribute(SOURCE_ROW_PRESENT_COL) :+
+      incrExpr
+  }
+
+  private def insertOutput(resolvedActions: Seq[DeltaMergeAction], incrExpr: Expression)
+  : Seq[Expression] = {
+    resolvedActions.map(_.expr) :+
+      Literal.FalseLiteral :+
+      UnresolvedAttribute(TARGET_ROW_PRESENT_COL) :+
+      UnresolvedAttribute(SOURCE_ROW_PRESENT_COL) :+
+      incrExpr
+  }
+
+  private def clauseOutput(clause: DeltaMergeIntoClause): Seq[Expression] = clause match {
+    case u: DeltaMergeIntoMatchedUpdateClause =>
+      updateOutput(u.resolvedActions, And(incrUpdatedCountExpr, incrUpdatedMatchedCountExpr))
+    case _: DeltaMergeIntoMatchedDeleteClause =>
+      deleteOutput(And(incrDeletedCountExpr, incrDeletedMatchedCountExpr))
+    case i: DeltaMergeIntoNotMatchedInsertClause =>
+      insertOutput(i.resolvedActions, incrInsertedCountExpr)
+    case u: DeltaMergeIntoNotMatchedBySourceUpdateClause =>
+      updateOutput(u.resolvedActions,
+        And(incrUpdatedCountExpr, incrUpdatedNotMatchedBySourceCountExpr))
+    case _: DeltaMergeIntoNotMatchedBySourceDeleteClause =>
+      deleteOutput(And(incrDeletedCountExpr, incrDeletedNotMatchedBySourceCountExpr))
+  }
+
+  private def clauseCondition(clause: DeltaMergeIntoClause): Expression = {
+    // if condition is None, then expression always evaluates to true
+    clause.condition.getOrElse(TrueLiteral)
+  }
+
+  /**
+   * Though low shuffle merge algorithm performs better than traditional merge algorithm in some
+   * cases, there are some case we should fallback to traditional merge executor:
+   *
+   * 1. Low shuffle merge algorithm requires generating metadata columns such as
+   * [[METADATA_ROW_IDX_COL]], [[METADATA_ROW_DEL_COL]], which only implemented on
+   * [[org.apache.spark.sql.rapids.GpuFileSourceScanExec]]. That means we need to fallback to
+   * this normal executor when [[org.apache.spark.sql.rapids.GpuFileSourceScanExec]] is disabled
+   * for some reason.
+   * 2. Low shuffle merge algorithm currently needs to broadcast deletion vector, which may
+   * introduce extra overhead. It maybe better to fallback to this algorithm when the changeset
+   * it too large.
+   */
+  def shouldFallback(): Boolean = {
+    // Trying to detect if we can execute finding touched files.
+    val touchFilePlanOverrideSucceed = verifyGpuPlan(planForFindingTouchedFiles()) { gpuPlan =>
+      gpuPlan.exists {
+        case scan: GpuFileSourceScanExec => scan.schema.fieldNames.contains(METADATA_ROW_IDX_COL)
+        case _ => false
+      }
+    }
+    if (!touchFilePlanOverrideSucceed) {
+      logWarning("Unable to override file scan for low shuffle merge, fallback to tradition merge.")
+      return true
+    }
+
+    // Trying to detect if we can execute the merge plan.
+    val mergePlanOverrideSucceed = verifyGpuPlan(planForMergeExecution(touchedFiles)) { gpuPlan =>
+      var overrideCount = 0
+      gpuPlan.foreachUp {
+        case scan: GpuFileSourceScanExec =>
+          if (scan.schema.fieldNames.contains(METADATA_ROW_DEL_COL)) {
+            overrideCount += 1
+          }
+        case _ =>
+      }
+      overrideCount == 2
+    }
+
+    if (!mergePlanOverrideSucceed) {
+      logWarning("Unable to override file scan for low shuffle merge, fallback to tradition merge.")
+      return true
+    }
+
+    val deletionVectorCount = touchedFiles.values.map(_._1.getLongCardinality).sum
+    val maxDelVectorCount = context.rapidsConf
+      .get(DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_MAX_COUNT)
+    if (deletionVectorCount > maxDelVectorCount) {
+      logWarning(
+        s"""Low shuffle merge can't be executed because broadcast deletion vector count
+           |$deletionVectorCount is large than max value $maxDelVectorCount """.stripMargin)
+      return true
+    }
+
+    false
+  }
+
+  private def verifyGpuPlan(input: DataFrame)(checkOverridePlan: SparkPlan => Boolean)
+  : Boolean = {
+    input.queryExecution.executedPlan match {
+      case aqe: AdaptiveSparkPlanExec =>
+        val overridePlan = GpuOverrides().applyWithContext(aqe.inputPlan.clone(),
+          Some("""Detecting GpuFileSourceScanExec could be pushed down""".stripMargin))
+        checkOverridePlan(overridePlan)
+      case plan =>
+        val overridePlan = GpuOverrides().applyWithContext(plan.clone(),
+          Some("""Detecting GpuFileSourceScanExec could be pushed down""".stripMargin))
+        checkOverridePlan(overridePlan)
+    }
+  }
 
   override def execute(): Seq[FileAction] = {
+    val touchedFiles: Map[String, (Roaring64Bitmap, AddFile)] = this.findTouchedFiles()
 
     val newFiles = context.cmd.withStatusCode("DELTA",
-      s"Rewriting ${filesToRewrite.size} files and saving modified data") {
-      val df = getModifiedDF().unionAll(getUnmodifiedDF)
+      s"Rewriting ${touchedFiles.size} files and saving modified data") {
+      val df = planForMergeExecution(touchedFiles)
       context.deltaTxn.writeFiles(df)
     }
 
@@ -520,7 +674,37 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       context.cmd.metrics("numTargetRowsDeleted").set(actualRowsDeleted)
     }
 
-    filesToRewrite.values.map(_._2).map(_.remove).toSeq ++ newFiles
+    touchedFiles.values.map(_._2).map(_.remove).toSeq ++ newFiles
+  }
+
+  private lazy val dataSkippedFiles: Seq[AddFile] = {
+    // Skip data based on the merge condition
+    val targetOnlyPredicates = splitConjunctivePredicates(context.cmd.condition)
+      .filter(_.references.subsetOf(context.cmd.target.outputSet))
+    context.deltaTxn.filterFiles(targetOnlyPredicates)
+  }
+
+  private lazy val dataSkippedTargetDF: DataFrame = {
+    addRowIndexMetaColumn(buildTargetDFWithFiles(dataSkippedFiles))
+  }
+
+  private lazy val touchedFiles: Map[String, (Roaring64Bitmap, AddFile)] = this.findTouchedFiles()
+
+  private def planForFindingTouchedFiles(): DataFrame = {
+
+    // Apply inner join to between source and target using the merge condition to find matches
+    // In addition, we attach two columns
+    // - METADATA_ROW_IDX column to identify target row in file
+    // - FILE_PATH_COL the target file name the row is from to later identify the files touched by
+    // matched rows
+    val targetDF = dataSkippedTargetDF.withColumn(FILE_PATH_COL, input_file_name())
+
+    sourceDF.join(targetDF, new Column(context.cmd.condition), "inner")
+  }
+
+  private def planForMergeExecution(touchedFiles: Map[String, (Roaring64Bitmap, AddFile)])
+  : DataFrame = {
+    getModifiedDF(touchedFiles).unionAll(getUnmodifiedDF(touchedFiles))
   }
 
   /**
@@ -530,35 +714,9 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
    */
   private def findTouchedFiles(): Map[String, (Roaring64Bitmap, AddFile)] =
     context.cmd.recordMergeOperation(sqlMetricName = "scanTimeMs") {
-
-      // Skip data based on the merge condition
-      val targetOnlyPredicates = splitConjunctivePredicates(context.cmd.condition)
-        .filter(_.references.subsetOf(context.cmd.target.outputSet))
-      val dataSkippedFiles = context.deltaTxn.filterFiles(targetOnlyPredicates)
-
-      //      logWarning(
-      //        s"""SourceDF length: ${sourceDF.collect().length}, data:
-      //           |${sourceDF.collect().mkString("[\n", "\n", "\n]")}""".stripMargin)
-
-
-      // Apply inner join to between source and target using the merge condition to find matches
-      // In addition, we attach two columns
-      // - METADATA_ROW_IDX column to identify
-      //     target row is modified by multiple user or not
-      // - the target file name the row is from to later identify the files touched by matched
-      //      rows
-      val targetDF = addRowIndexMetaColumn(buildTargetDFWithFiles(dataSkippedFiles))
-        .withColumn(FILE_PATH_COL, input_file_name())
-      //      logWarning(
-      //        s"""FullTargetDF length: ${targetDF.collect().length}, data:
-      //           |${targetDF.collect().mkString("[\n", "\n", "\n]")}""".stripMargin)
-
-      val joinToFindTouchedFiles = sourceDF.join(targetDF, new Column(context.cmd.condition),
-        "inner")
-
       context.spark.udf.register("row_index_set", udaf(RoaringBitmapUDAF))
       // Process the matches from the inner join to record touched files and find multiple matches
-      val collectTouchedFiles = joinToFindTouchedFiles
+      val collectTouchedFiles = planForFindingTouchedFiles()
         .select(col(FILE_PATH_COL), col(METADATA_ROW_IDX_COL))
         .groupBy(FILE_PATH_COL)
         .agg(
@@ -618,14 +776,12 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
           .absolutePath(context.cmd.targetDeltaLog.dataPath.toString, f.path)
           .toString, f)).toMap
 
-      logInfo(s"Value of touched add files: $touchedAddFiles")
-
       // When the target table is empty, and the optimizer optimized away the join entirely
       // numSourceRows will be incorrectly 0.
       // We need to scan the source table once to get the correct
       // metric here.
       if (context.cmd.metrics("numSourceRows").value == 0 &&
-        (dataSkippedFiles.isEmpty || targetDF.take(1).isEmpty)) {
+        (dataSkippedFiles.isEmpty || dataSkippedTargetDF.take(1).isEmpty)) {
         val numSourceRows = sourceDF.count()
         context.cmd.metrics("numSourceRows").set(numSourceRows)
       }
@@ -647,50 +803,6 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       collectTouchedFiles.map(kv => (kv._1, (kv._2._1, touchedAddFiles(kv._1))))
     }
 
-  private def updateOutput(resolvedActions: Seq[DeltaMergeAction], incrExpr: Expression)
-  : Seq[Expression] = {
-    resolvedActions.map(_.expr) :+
-      Literal.FalseLiteral :+
-      UnresolvedAttribute(TARGET_ROW_PRESENT_COL) :+
-      UnresolvedAttribute(SOURCE_ROW_PRESENT_COL) :+
-      incrExpr
-  }
-
-  private def deleteOutput(incrExpr: Expression): Seq[Expression] = {
-    targetOutputCols :+
-      TrueLiteral :+
-      UnresolvedAttribute(TARGET_ROW_PRESENT_COL) :+
-      UnresolvedAttribute(SOURCE_ROW_PRESENT_COL) :+
-      incrExpr
-  }
-
-  private def insertOutput(resolvedActions: Seq[DeltaMergeAction], incrExpr: Expression)
-  : Seq[Expression] = {
-    resolvedActions.map(_.expr) :+
-      Literal.FalseLiteral :+
-      UnresolvedAttribute(TARGET_ROW_PRESENT_COL) :+
-      UnresolvedAttribute(SOURCE_ROW_PRESENT_COL) :+
-      incrExpr
-  }
-
-  private def clauseOutput(clause: DeltaMergeIntoClause): Seq[Expression] = clause match {
-    case u: DeltaMergeIntoMatchedUpdateClause =>
-      updateOutput(u.resolvedActions, And(incrUpdatedCountExpr, incrUpdatedMatchedCountExpr))
-    case _: DeltaMergeIntoMatchedDeleteClause =>
-      deleteOutput(And(incrDeletedCountExpr, incrDeletedMatchedCountExpr))
-    case i: DeltaMergeIntoNotMatchedInsertClause =>
-      insertOutput(i.resolvedActions, incrInsertedCountExpr)
-    case u: DeltaMergeIntoNotMatchedBySourceUpdateClause =>
-      updateOutput(u.resolvedActions,
-        And(incrUpdatedCountExpr, incrUpdatedNotMatchedBySourceCountExpr))
-    case _: DeltaMergeIntoNotMatchedBySourceDeleteClause =>
-      deleteOutput(And(incrDeletedCountExpr, incrDeletedNotMatchedBySourceCountExpr))
-  }
-
-  private def clauseCondition(clause: DeltaMergeIntoClause): Expression = {
-    // if condition is None, then expression always evaluates to true
-    clause.condition.getOrElse(TrueLiteral)
-  }
 
   /**
    * Modify original data frame to insert
@@ -727,10 +839,11 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
    * [[METADATA_ROW_DEL_COL]] to indicate whether filtered by joining with source table in first
    * step.
    */
-  private def getTargetDF(): DataFrame = {
+  private def getTouchedTargetDF(touchedFiles: Map[String, (Roaring64Bitmap, AddFile)])
+  : DataFrame = {
     // Generate a new target dataframe that has same output attributes exprIds as the target plan.
     // This allows us to apply the existing resolved update/insert expressions.
-    val baseTargetDF = buildTargetDFWithFiles(filesToRewrite.values.map(_._2).toSeq)
+    val baseTargetDF = buildTargetDFWithFiles(touchedFiles.values.map(_._2).toSeq)
 
     val newPlan = {
       val rowDelAttr = AttributeReference(
@@ -745,7 +858,7 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
           // This is required to ensure that row index is correctly calculated.
           val newFileFormat = {
             val oldFormat = fs.fileFormat.asInstanceOf[DeltaParquetFileFormat]
-            val dvs = filesToRewrite.map(kv => (new URI(kv._1),
+            val dvs = touchedFiles.map(kv => (new URI(kv._1),
               DeletionVectorDescriptorWithFilterType(toDeletionVector(kv._2._1),
                 RowIndexFilterType.UNKNOWN)))
             val broadcastDVs = context.spark.sparkContext.broadcast(dvs)
@@ -768,7 +881,6 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
     val df = Dataset.ofRows(context.spark, newPlan)
       .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
 
-    logInfo(s"TargetDF plan: ${df.queryExecution.analyzed}")
     df
   }
 
@@ -790,11 +902,11 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
    * 3. Target rows which are updated
    * 4. Target rows which are deleted
    */
-  private def getModifiedDF(): DataFrame = {
+  private def getModifiedDF(touchedFiles: Map[String, (Roaring64Bitmap, AddFile)]): DataFrame = {
     val sourceDF = this.sourceDF
       .withColumn(SOURCE_ROW_PRESENT_COL, new Column(incrSourceRowCountExpr))
 
-    val targetDF = getTargetDF()
+    val targetDF = getTouchedTargetDF(touchedFiles)
 
     val joinedDF = {
       val joinType = if (hasNoInserts &&
@@ -903,34 +1015,32 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       repartitionIfNeeded(modifiedDF)
     }
 
-    //    logWarning(
-    //      s"""ModifiedDF: \n ${modifiedDF.queryExecution.explainString(ExtendedMode)}
-    //         |ModifiedDF plan schema: ${modifiedDF.queryExecution.analyzed.schema}
-    //         |ModifiedDF length: ${modifiedDF.collect().length}, data:
-    //         |${modifiedDF.collect().mkString("[\n", "\n", "\n]")}
-    //         |""".stripMargin)
-
-    logWarning(
-      s"""ModifiedDF: \n ${modifiedDF.queryExecution.explainString(ExtendedMode)}
-         |ModifiedDF plan schema: ${modifiedDF.queryExecution.analyzed.schema}
-         |""".stripMargin)
-
     modifiedDF
   }
 
-  private def getUnmodifiedDF: DataFrame = {
-    val unmodifiedDF = getTargetDF().filter(!col(METADATA_ROW_DEL_COL))
+  private def getUnmodifiedDF(touchedFiles: Map[String, (Roaring64Bitmap, AddFile)]): DataFrame = {
+    val unmodifiedDF = getTouchedTargetDF(touchedFiles)
+      .filter(!col(METADATA_ROW_DEL_COL))
       .drop(TARGET_ROW_PRESENT_COL, METADATA_ROW_DEL_COL)
-
-    //    logWarning(
-    //      s"""UnmodifiedDF length: ${unmodifiedDF.collect().length}, data:
-    //         |${unmodifiedDF.collect().mkString("[\n", "\n", "\n]")}""".stripMargin)
 
     unmodifiedDF
   }
 }
 
+
 object MergeExecutor {
+
+  /**
+   * Spark UI will track all normal accumulators along with Spark tasks to show them on Web UI.
+   * However, the accumulator used by `MergeIntoCommand` can store a very large value since it
+   * tracks all files that need to be rewritten. We should ask Spark UI to not remember it,
+   * otherwise, the UI data may consume lots of memory. Hence, we use the prefix `internal.metrics.`
+   * to make this accumulator become an internal accumulator, so that it will not be tracked by
+   * Spark UI.
+   */
+  val TOUCHED_FILES_ACCUM_NAME = "internal.metrics.MergeIntoDelta.touchedFiles"
+
+  val ROW_ID_COL = "_row_id_"
   val FILE_PATH_COL: String = GpuDeltaParquetFileFormatUtils.FILE_PATH_COL
   val SOURCE_ROW_PRESENT_COL: String = "_source_row_present_"
   val SOURCE_ROW_PRESENT_FIELD: StructField = StructField(SOURCE_ROW_PRESENT_COL, BooleanType,
@@ -949,13 +1059,13 @@ object MergeExecutor {
   // rather than the version from Delta Lake.
   val CDC_TYPE_NOT_CDC_LITERAL: Literal = Literal(null, StringType)
 
-  private[sql] def toDeletionVector(bitmap: Roaring64Bitmap): DeletionVectorDescriptor = {
+  def toDeletionVector(bitmap: Roaring64Bitmap): DeletionVectorDescriptor = {
     DeletionVectorDescriptor.inlineInLog(RoaringBitmapWrapper(bitmap).serializeToBytes(),
       bitmap.getLongCardinality)
   }
 
   /** Count the number of distinct partition values among the AddFiles in the given set. */
-  private[sql] def totalBytesAndDistinctPartitionValues(files: Seq[FileAction]): (Long, Int) = {
+  def totalBytesAndDistinctPartitionValues(files: Seq[FileAction]): (Long, Int) = {
     val distinctValues = new mutable.HashSet[Map[String, String]]()
     var bytes = 0L
     val iter = files.collect { case a: AddFile => a }.iterator
