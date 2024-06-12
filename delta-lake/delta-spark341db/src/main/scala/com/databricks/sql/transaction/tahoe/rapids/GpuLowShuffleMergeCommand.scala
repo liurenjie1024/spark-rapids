@@ -719,13 +719,13 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
    */
   private def findTouchedFiles(): Map[String, (Roaring64Bitmap, AddFile)] =
     context.cmd.recordMergeOperation(sqlMetricName = "scanTimeMs") {
-      context.spark.udf.register("row_index_set", udaf(RoaringBitmapUDAF))
+      val agg = udaf(RoaringBitmapUDAF)
       // Process the matches from the inner join to record touched files and find multiple matches
       val collectTouchedFiles = planForFindingTouchedFiles()
         .select(col(FILE_PATH_COL), col(METADATA_ROW_IDX_COL))
         .groupBy(FILE_PATH_COL)
         .agg(
-          expr(s"row_index_set($METADATA_ROW_IDX_COL) as row_idxes"),
+          agg(col("$METADATA_ROW_IDX_COL")).as("row_idxes"),
           count("*").as("count"))
         .collect().map(row => {
           val filename = row.getAs[String](FILE_PATH_COL)
