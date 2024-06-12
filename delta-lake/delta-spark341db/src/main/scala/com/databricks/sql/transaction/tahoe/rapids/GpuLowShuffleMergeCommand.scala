@@ -725,7 +725,7 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
         .select(col(FILE_PATH_COL), col(METADATA_ROW_IDX_COL))
         .groupBy(FILE_PATH_COL)
         .agg(
-          agg(col("$METADATA_ROW_IDX_COL")).as("row_idxes"),
+          agg(col(s"$METADATA_ROW_IDX_COL")).as("row_idxes"),
           count("*").as("count"))
         .collect().map(row => {
           val filename = row.getAs[String](FILE_PATH_COL)
@@ -805,7 +805,14 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       context.cmd.metrics("numTargetBytesRemoved") += removedBytes
       context.cmd.metrics("numTargetPartitionsRemovedFrom") += removedPartitions
 
-      collectTouchedFiles.map(kv => (kv._1, (kv._2._1, touchedAddFiles(kv._1))))
+      collectTouchedFiles.map(kv => {
+        val filename = kv._1
+        val rowIdxSet = kv._2._1
+        // Free unused memory
+        rowIdxSet.trim()
+        val addFile = touchedAddFiles(filename)
+        (filename, (rowIdxSet, addFile))
+      })
     }
 
 
