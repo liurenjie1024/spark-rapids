@@ -1024,7 +1024,7 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
     val modifiedDF = {
 
       // Make this a udf to avoid catalyst to be too aggressive to even remove the join!
-      val noopRowDroppedCol = udf(new GpuDeltaNoopUDF()).apply(!col(ROW_DROPPED_COL))
+      val noopRowDroppedCol = udf(GpuDeltaNoopUDF).apply(!col(ROW_DROPPED_COL))
 
       val modifiedDF = joinedDF.select(modifiedCols: _*)
         // This will not filter anything since they always return true, but we need to avoid

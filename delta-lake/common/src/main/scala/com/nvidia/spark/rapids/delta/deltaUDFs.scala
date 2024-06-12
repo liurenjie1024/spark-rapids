@@ -81,7 +81,7 @@ class GpuDeltaMetricUpdateUDF(metric: SQLMetric)
   }
 }
 
-class GpuDeltaNoopUDF extends Function1[Boolean, Boolean] with RapidsUDF with Serializable {
+object GpuDeltaNoopUDF extends Function1[Boolean, Boolean] with RapidsUDF with Serializable {
   override def apply(v1: Boolean): Boolean = v1
 
   override def evaluateColumnar(numRows: Int, args: ColumnVector*): ColumnVector = {
@@ -93,12 +93,14 @@ class GpuDeltaNoopUDF extends Function1[Boolean, Boolean] with RapidsUDF with Se
 @SQLUserDefinedType(udt = classOf[RoaringBitmapUDT])
 case class RoaringBitmapWrapper(inner: Roaring64Bitmap) {
   def serializeToBytes(): Array[Byte] = {
-    withResource(new ByteArrayOutputStream()) { bout =>
+    val ret = withResource(new ByteArrayOutputStream()) { bout =>
       withResource(new DataOutputStream(bout)) { dao =>
         inner.serialize(dao)
       }
       bout.toByteArray
     }
+    inner.runOptimize()
+    ret
   }
 }
 
