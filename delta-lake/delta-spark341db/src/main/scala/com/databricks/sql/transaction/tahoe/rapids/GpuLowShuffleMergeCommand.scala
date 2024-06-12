@@ -819,8 +819,8 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       collectTouchedFiles.map(kv => {
         val filename = kv._1
         val rowIdxSet = kv._2._1
-        // Free unused memory
-        rowIdxSet.trim()
+        // Optimize memory usage
+        rowIdxSet.runOptimize()
         val addFile = touchedAddFiles(filename)
         (filename, (rowIdxSet, addFile))
       })
