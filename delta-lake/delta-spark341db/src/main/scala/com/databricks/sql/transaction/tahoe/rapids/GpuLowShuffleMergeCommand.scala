@@ -23,6 +23,7 @@ package com.databricks.sql.transaction.tahoe.rapids
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.collection.mutable
 
@@ -41,9 +42,10 @@ import com.nvidia.spark.rapids.RapidsConf.DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BRO
 import com.nvidia.spark.rapids.delta._
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.{METADATA_ROW_DEL_COL, METADATA_ROW_DEL_FIELD, METADATA_ROW_IDX_COL, METADATA_ROW_IDX_FIELD}
 import com.nvidia.spark.rapids.shims.FileSourceScanExecMeta
+import com.nvidia.spark.rapids.Arm.withResource
 import org.roaringbitmap.longlong.Roaring64Bitmap
-
 import org.apache.spark.SparkContext
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
@@ -192,7 +194,9 @@ case class GpuLowShuffleMergeCommand(
         if (fallback) {
           None
         } else {
-          Some(runLowShuffleMerge(spark, startTime, deltaTxn, executor))
+          withResource(executor) { e =>
+            Some(runLowShuffleMerge(spark, startTime, deltaTxn, e))
+          }
         }
       }
 
@@ -297,7 +301,7 @@ case class MergeExecutorContext(cmd: GpuLowShuffleMergeCommand,
     deltaTxn: OptimisticTransaction,
     rapidsConf: RapidsConf)
 
-trait MergeExecutor extends AnalysisHelper with PredicateHelper with Logging {
+trait MergeExecutor extends AnalysisHelper with PredicateHelper with Logging with AutoCloseable  {
 
   val context: MergeExecutorContext
 
@@ -488,6 +492,8 @@ class InsertOnlyMergeExecutor(override val context: MergeExecutorContext) extend
       newFiles
     }
   }
+
+  override def close(): Unit = {}
 }
 
 
@@ -693,7 +699,12 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
     addRowIndexMetaColumn(buildTargetDFWithFiles(dataSkippedFiles))
   }
 
-  private lazy val touchedFiles: Map[String, (Roaring64Bitmap, AddFile)] = this.findTouchedFiles()
+  private val touchedFilesCollected = new AtomicBoolean(false)
+  private lazy val touchedFiles: Map[String, (Roaring64Bitmap, AddFile)] = {
+    val ret = this.findTouchedFiles()
+    touchedFilesCollected.set(true)
+    ret
+  }
 
   private def planForFindingTouchedFiles(): DataFrame = {
 
@@ -1031,6 +1042,12 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
     getTouchedTargetDF(touchedFiles)
       .filter(!col(METADATA_ROW_DEL_COL))
       .drop(TARGET_ROW_PRESENT_COL, METADATA_ROW_DEL_COL)
+  }
+
+  override def close(): Unit =  {
+    if (touchedFilesCollected.get()) {
+      touchedFiles.values.foreach(_._1.clear())
+    }
   }
 }
 
