@@ -38,14 +38,15 @@ import com.databricks.sql.transaction.tahoe.schema.ImplicitMetadataOperation
 import com.databricks.sql.transaction.tahoe.sources.DeltaSQLConf
 import com.databricks.sql.transaction.tahoe.util.{AnalysisHelper, DeltaFileOperations}
 import com.nvidia.spark.rapids.{GpuOverrides, RapidsConf, SparkPlanMeta}
+import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.RapidsConf.DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_MAX_COUNT
 import com.nvidia.spark.rapids.delta._
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.{METADATA_ROW_DEL_COL, METADATA_ROW_DEL_FIELD, METADATA_ROW_IDX_COL, METADATA_ROW_IDX_FIELD}
 import com.nvidia.spark.rapids.shims.FileSourceScanExecMeta
-import com.nvidia.spark.rapids.Arm.withResource
 import org.roaringbitmap.longlong.Roaring64Bitmap
-import org.apache.spark.SparkContext
 
+import org.apache.spark.SparkContext
+import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
@@ -700,10 +701,16 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
   }
 
   private val touchedFilesCollected = new AtomicBoolean(false)
-  private lazy val touchedFiles: Map[String, (Roaring64Bitmap, AddFile)] = {
+  private lazy val (touchedFiles, broadcastDVs): (
+    Map[String, (Roaring64Bitmap, AddFile)],
+    Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]]) = {
     val ret = this.findTouchedFiles()
+    val dvs = ret.map(kv => (new URI(kv._1),
+      DeletionVectorDescriptorWithFilterType(toDeletionVector(kv._2._1),
+        RowIndexFilterType.UNKNOWN)))
+    val broadcastDVs = context.spark.sparkContext.broadcast(dvs)
     touchedFilesCollected.set(true)
-    ret
+    (ret, broadcastDVs)
   }
 
   private def planForFindingTouchedFiles(): DataFrame = {
@@ -881,10 +888,6 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
           // This is required to ensure that row index is correctly calculated.
           val newFileFormat = {
             val oldFormat = fs.fileFormat.asInstanceOf[DeltaParquetFileFormat]
-            val dvs = touchedFiles.map(kv => (new URI(kv._1),
-              DeletionVectorDescriptorWithFilterType(toDeletionVector(kv._2._1),
-                RowIndexFilterType.UNKNOWN)))
-            val broadcastDVs = context.spark.sparkContext.broadcast(dvs)
 
             oldFormat.copy(isSplittable = false,
               broadcastDvMap = Some(broadcastDVs),
@@ -1047,6 +1050,7 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
   override def close(): Unit =  {
     if (touchedFilesCollected.get()) {
       touchedFiles.values.foreach(_._1.clear())
+      broadcastDVs.destroy()
     }
   }
 }
