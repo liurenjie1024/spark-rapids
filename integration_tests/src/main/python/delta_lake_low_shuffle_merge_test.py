@@ -29,7 +29,6 @@ delta_merge_enabled_conf = copy_and_update(delta_writes_enabled_conf,
 @allow_non_gpu("ColumnarToRowExec", *delta_meta_allow)
 @delta_lake
 @ignore_order
-@pytest.mark.skip()
 @pytest.mark.skipif(not ((is_databricks_runtime() and is_databricks133_or_later()) or
                          (not is_databricks_runtime() and spark_version().startswith("3.4"))),
                     reason="Delta Lake Low Shuffle Merge only supports Databricks 13.3 or OSS "
