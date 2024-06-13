@@ -44,8 +44,8 @@ import com.nvidia.spark.rapids.delta._
 import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.{METADATA_ROW_DEL_COL, METADATA_ROW_DEL_FIELD, METADATA_ROW_IDX_COL, METADATA_ROW_IDX_FIELD}
 import com.nvidia.spark.rapids.shims.FileSourceScanExecMeta
 import org.roaringbitmap.longlong.Roaring64Bitmap
-
 import org.apache.spark.SparkContext
+
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql._
@@ -58,7 +58,7 @@ import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.functions._
+import org.apache.spark.sql.functions.{e, _}
 import org.apache.spark.sql.types.{BooleanType, LongType, StringType, StructField, StructType}
 
 /**
@@ -192,10 +192,10 @@ case class GpuLowShuffleMergeCommand(
           }
         }
 
-        if (fallback) {
-          None
-        } else {
-          withResource(executor) { e =>
+        withResource(executor) { e =>
+          if (fallback) {
+            None
+          } else {
             Some(runLowShuffleMerge(spark, startTime, deltaTxn, e))
           }
         }
