@@ -240,9 +240,9 @@ else
     export PYSP_TEST_spark_ui_enabled=${PYSP_TEST_spark_ui_enabled:-false}
 
     # Set the Delta log cache size to prevent the driver from caching every Delta log indefinitely
-    export PYSP_TEST_spark_databricks_delta_delta_log_cacheSize=${PYSP_TEST_spark_databricks_delta_delta_log_cacheSize:-10}
+    export PYSP_TEST_spark_databricks_delta_delta_log_cacheSize=${PYSP_TEST_spark_databricks_delta_delta_log_cacheSize:-2}
     deltaCacheSize=$PYSP_TEST_spark_databricks_delta_delta_log_cacheSize
-    DRIVER_EXTRA_JAVA_OPTIONS="-ea -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError \
+    DRIVER_EXTRA_JAVA_OPTIONS="-ea -XX:+HeapDumpOnOutOfMemoryError \
     -XX:HeapDumpPath=/home/ubuntu/heapdump.hprof \
     -Duser.timezone=$TZ -Ddelta.log.cacheSize=$deltaCacheSize"
     export PYSP_TEST_spark_driver_extraJavaOptions="$DRIVER_EXTRA_JAVA_OPTIONS $COVERAGE_SUBMIT_FLAGS"
