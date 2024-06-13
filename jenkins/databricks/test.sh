@@ -71,6 +71,7 @@ DELTA_LAKE_CONFS="--driver-memory 4g"
 
 # Enable event log for qualification & profiling tools testing
 export PYSP_TEST_spark_eventLog_enabled=true
+export PYSP_TEST_spark_databricks_delta_delta_log_cacheSize=1
 mkdir -p /tmp/spark-events
 
 rapids_shuffle_smoke_test() {
