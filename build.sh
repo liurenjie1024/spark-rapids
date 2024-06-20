@@ -22,5 +22,6 @@ set -x
 
 rm -rf output
 mkdir output
-mvn -Dbuildver=321 install -Drat.skip=true -DskipTests
+git submodule update --init --recursive
+mvn clean install -Drat.skip=true -Dmaven.javadoc.skip=true -Dskip -Dmaven.scalastyle.skip=true -DskipTests -Dbuildver=321
 mv dist/target/rapids-4-spark_2.12-24.08.0-SNAPSHOT-cuda11.jar ./output/
