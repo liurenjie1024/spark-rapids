@@ -141,8 +141,9 @@ object GpuLore {
 
     rootExec.transformExpressionsUpWithPruning(_.containsPattern(PLAN_EXPRESSION)) {
       case sub: ExecSubqueryExpression =>
+        val newSub = restoreSubqueryPlan(nextId, sub, rootPath, broadcastHadoopConf)
         nextId += 1
-        restoreSubqueryPlan(nextId, sub, rootPath, broadcastHadoopConf)
+        newSub
     }.withNewChildren(newChildren).asInstanceOf[GpuExec]
 
 //    rootExec match {
