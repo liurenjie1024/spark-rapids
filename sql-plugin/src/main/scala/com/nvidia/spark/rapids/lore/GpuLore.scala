@@ -274,7 +274,12 @@ object GpuLore {
         case _ =>
       }
 
+      println("===Being of lore===")
+      println(s"${sparkPlan.treeString}")
+      println("===End of lore===")
+
       sparkPlan
+
     } else {
       // We don't need to dump the output of the nodes, just tag the lore id
       sparkPlan.foreachUp {
