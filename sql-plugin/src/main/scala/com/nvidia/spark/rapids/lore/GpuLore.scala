@@ -27,13 +27,12 @@ import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.SparkShimImpl
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkEnv
 
+import org.apache.spark.SparkEnv
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
-import org.apache.spark.sql.catalyst.trees.TreePattern.PLAN_EXPRESSION
 import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression, ReusedSubqueryExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.BroadcastQueryStageExec
 import org.apache.spark.sql.rapids.execution.{GpuBroadcastExchangeExec, GpuCustomShuffleReaderExec}
@@ -140,7 +139,7 @@ object GpuLore {
 
     var nextId = rootExec.children.length
 
-    rootExec.transformExpressionsUpWithPruning(_.containsPattern(PLAN_EXPRESSION)) {
+    rootExec.transformExpressionsUp {
       case sub: ExecSubqueryExpression =>
         val newSub = restoreSubqueryPlan(nextId, sub, rootPath, broadcastHadoopConf)
         nextId += 1
@@ -246,7 +245,7 @@ object GpuLore {
               }
 
               var nextId = g.children.length
-              g.transformExpressionsUpWithPruning(_.containsPattern(PLAN_EXPRESSION)) {
+              g.transformExpressionsUp {
                 case sub: ExecSubqueryExpression =>
                   if (spark.sessionState.conf.subqueryReuseEnabled) {
                     if (!subqueries.contains(sub.plan.canonicalized)) {
