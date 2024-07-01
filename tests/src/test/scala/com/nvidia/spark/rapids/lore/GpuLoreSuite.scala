@@ -139,8 +139,7 @@ class GpuLoreSuite extends SparkQueryCompareTestSuite with FunSuiteWithTempDir w
 
 
       val restoredRes = GpuColumnarToRowExec(GpuLore.restoreGpuExec(
-        new Path(s"${TEST_FILES_ROOT.getAbsolutePath}/loreId-3"),
-        spark.sparkContext.hadoopConfiguration))
+        new Path(s"${TEST_FILES_ROOT.getAbsolutePath}/loreId-3"), spark))
         .executeCollect()
         .length
 
@@ -160,7 +159,7 @@ class GpuLoreSuite extends SparkQueryCompareTestSuite with FunSuiteWithTempDir w
 
       val restoredResultLength = GpuColumnarToRowExec(GpuLore.restoreGpuExec(
         new Path(s"${TEST_FILES_ROOT.getAbsolutePath}/loreId-$loreId"),
-        spark.sparkContext.hadoopConfiguration))
+        spark))
         .executeCollect()
         .length
 

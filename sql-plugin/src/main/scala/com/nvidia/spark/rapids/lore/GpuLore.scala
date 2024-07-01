@@ -29,6 +29,7 @@ import org.apache.hadoop.fs.Path
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression, ReusedSubqueryExec, SparkPlan, SQLExecution}
@@ -112,14 +113,15 @@ object GpuLore {
     new Path(rootPath, s"input-$childIndex")
   }
 
-  def restoreGpuExec(rootPath: Path, hadoopConf: Configuration): GpuExec = {
-    val rootExec = loadObject[GpuExec](pathOfRootPlanMeta(rootPath), hadoopConf)
+  def restoreGpuExec(rootPath: Path, spark: SparkSession): GpuExec = {
+    val rootExec = loadObject[GpuExec](pathOfRootPlanMeta(rootPath),
+      spark.sparkContext.hadoopConfiguration)
 
     checkUnsupportedOperator(rootExec)
 
     val broadcastHadoopConf = {
-      val sc = SparkShimImpl.sessionFromPlan(rootExec).sparkContext
-      sc.broadcast(new SerializableConfiguration(hadoopConf))
+      val sc = spark.sparkContext
+      sc.broadcast(new SerializableConfiguration(spark.sparkContext.hadoopConfiguration))
     }
 
     // Load children
