@@ -145,24 +145,6 @@ object GpuLore {
         nextId += 1
         newSub
     }.withNewChildren(newChildren).asInstanceOf[GpuExec]
-
-//    rootExec match {
-//      case b: GpuFilterExec =>
-//        val newExpr = restoreSubqueryPlan(1, b.condition, rootPath, broadcastHadoopConf)._1
-//        b.makeCopy(Array(newExpr, newChildren.head)).asInstanceOf[GpuExec]
-//      case p: GpuProjectExec =>
-//        var nextPlanId = 1
-//        val newExprs = p.expressions.map { expr =>
-//          val (newExpr, nextId) = restoreSubqueryPlan(nextPlanId, expr, rootPath
-//            , broadcastHadoopConf)
-//          nextPlanId = nextId
-//          newExpr
-//        }.toList
-//
-//        p.makeCopy(Array(newExprs, newChildren.head)).asInstanceOf[GpuExec]
-//      case _ => rootExec.withNewChildren(newChildren)
-//        .asInstanceOf[GpuExec]
-//    }
   }
 
   private def restoreSubqueryPlan(id: Int, sub: ExecSubqueryExpression,
@@ -259,36 +241,10 @@ object GpuLore {
                   nextId += 1
                   sub
               }
-
-//              g match {
-//                case f: GpuFilterExec =>
-//                  tagForSubqueryPlan(1, f.condition, loreOutputInfo, hadoopConf)
-//                case p: GpuProjectExec =>
-//                  p.projectList.foldLeft(1)((nextPlanId, expr) =>
-//                    tagForSubqueryPlan(nextPlanId, expr, loreOutputInfo, hadoopConf))
-//                case agg: GpuHashAggregateExec =>
-//                  agg.aggregateExpressions.flatMap(_.aggregateFunction.children).collect {
-//                    // The reason we can't support dumping subquery expression in aggregate
-//                    // function is that typically aggregation function will be split into
-//                    // partial aggregation and final aggregation, and the
-//                    // [ReuseExchangeAndSubquery] rule will replace final aggregation's subquery
-//                    // with reused subquery expression. The problem is this rule happens in
-//                    // last step, even after columnar rule, so the tag will no longer work. We
-//                    // may add some physical rules to handle this in future, but given that
-//                    // this is a corner case, we don't support it for now.
-//                    case _: ExecSubqueryExpression => throw new IllegalArgumentException(
-//                      "Unable to support dumping subquery expression in aggregate function")
-//                  }
-//                case _ =>
-//              }
             }
           }
         case _ =>
       }
-
-      println("===Being of lore===")
-      println(s"${sparkPlan.treeString}")
-      println("===End of lore===")
 
       sparkPlan
 

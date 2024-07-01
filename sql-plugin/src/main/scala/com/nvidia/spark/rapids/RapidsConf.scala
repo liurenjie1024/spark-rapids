@@ -2309,9 +2309,9 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
 
   val LORE_DUMP_IDS = conf("spark.rapids.sql.lore.idsToDump")
     .doc("Specify the LORE ids of operators to dump. The format is a comma separated list of " +
-      "LORE ids. For example: \"1,2,3\" will dump the input of gpu operator with LORE ids 1, 2, " +
-      "and 3. For more details, please refer to [the LORE documentation](../dev/lore.md). " +
-      "If this is not set, no data will be dumped.")
+      "LORE ids. For example: \"1[0]\" will dump partition 0 of input of gpu operator " +
+      "with lore id 1. For more details, please refer to " +
+      "[the LORE documentation](../dev/lore.md). If this is not set, no data will be dumped.")
     .stringConf
     .createOptional
 
