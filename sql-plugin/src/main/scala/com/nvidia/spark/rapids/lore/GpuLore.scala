@@ -21,16 +21,16 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import scala.reflect.ClassTag
 
-import com.nvidia.spark.rapids.{GpuColumnarToRowExec, GpuExec, GpuFilterExec, GpuHashAggregateExec, GpuProjectExec, RapidsConf}
+import com.nvidia.spark.rapids.{GpuColumnarToRowExec, GpuExec, RapidsConf}
 import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.SparkShimImpl
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkEnv
 
+import org.apache.spark.SparkEnv
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.trees.TreePattern.PLAN_EXPRESSION
 import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression, ReusedSubqueryExec, SparkPlan, SQLExecution}
