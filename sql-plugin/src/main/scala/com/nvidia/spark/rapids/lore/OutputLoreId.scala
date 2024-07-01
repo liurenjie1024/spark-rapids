@@ -18,6 +18,9 @@ package com.nvidia.spark.rapids.lore
 
 import org.apache.hadoop.fs.Path
 
+import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.util.SerializableConfiguration
+
 case class OutputLoreId(loreId: LoreId, partitionIds: Set[Int]) {
   def outputAllParitions: Boolean = partitionIds.isEmpty
 
