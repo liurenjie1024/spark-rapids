@@ -19,6 +19,7 @@ package com.nvidia.spark.rapids.lore
 import java.util.concurrent.{ConcurrentHashMap, ConcurrentMap}
 import java.util.concurrent.atomic.AtomicInteger
 
+import scala.collection.mutable
 import scala.reflect.ClassTag
 
 import com.nvidia.spark.rapids.{GpuColumnarToRowExec, GpuExec, RapidsConf}
@@ -26,8 +27,8 @@ import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.SparkShimImpl
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.SparkEnv
+
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -214,10 +215,13 @@ object GpuLore {
         new IllegalArgumentException(s"${RapidsConf.LORE_DUMP_PATH.key} must be set " +
           s"when ${RapidsConf.LORE_DUMP_IDS.key} is set."))
 
+      val spark = SparkShimImpl.sessionFromPlan(sparkPlan)
       val hadoopConf = {
-        val sc = SparkShimImpl.sessionFromPlan(sparkPlan).sparkContext
+        val sc = spark.sparkContext
         sc.broadcast(new SerializableConfiguration(sc.hadoopConfiguration))
       }
+
+      val subqueries = mutable.Set.empty[SparkPlan]
 
       sparkPlan.foreachUp {
         case g: GpuExec =>
@@ -244,6 +248,14 @@ object GpuLore {
               var nextId = g.children.length
               g.transformExpressionsUpWithPruning(_.containsPattern(PLAN_EXPRESSION)) {
                 case sub: ExecSubqueryExpression =>
+                  if (spark.sessionState.conf.subqueryReuseEnabled) {
+                    if (!subqueries.contains(sub.plan.canonicalized)) {
+                      subqueries += sub.plan.canonicalized
+                    } else {
+                      throw new IllegalArgumentException("Subquery reuse is enabled, and we found" +
+                        " duplicated subqueries, which is currently not supported by LORE.")
+                    }
+                  }
                   tagSubqueryPlan(nextId, sub, loreOutputInfo, hadoopConf)
                   nextId += 1
                   sub
