@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2023, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2024, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,13 +27,15 @@ import ai.rapids.cudf.JCudfSerialization.SerializedTableHeader
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
+import com.nvidia.spark.rapids.shuffle.TableSerializer
+import com.nvidia.spark.rapids.shuffle.kudo.SerializedTable
 
 import org.apache.spark.TaskContext
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
 import org.apache.spark.sql.types.NullType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-class SerializedBatchIterator(dIn: DataInputStream)
+class SerializedBatchIterator(dIn: DataInputStream, deserTime: GpuMetric)
   extends Iterator[(Int, ColumnarBatch)] {
   private[this] var nextHeader: Option[SerializedTableHeader] = None
   private[this] var toBeReturned: Option[ColumnarBatch] = None
@@ -49,7 +51,7 @@ class SerializedBatchIterator(dIn: DataInputStream)
   }
 
   def tryReadNextHeader(): Option[Long] = {
-    if (streamClosed){
+    if (streamClosed) {
       None
     } else {
       if (nextHeader.isEmpty) {
@@ -90,14 +92,16 @@ class SerializedBatchIterator(dIn: DataInputStream)
   }
 
   override def hasNext: Boolean = {
-    tryReadNextHeader()
+    deserTime.ns(tryReadNextHeader())
     nextHeader.isDefined
   }
 
   override def next(): (Int, ColumnarBatch) = {
     if (toBeReturned.isEmpty) {
-      tryReadNextHeader()
-      toBeReturned = tryReadNext()
+      deserTime.ns {
+        tryReadNextHeader()
+        toBeReturned = tryReadNext()
+      }
       if (nextHeader.isEmpty || toBeReturned.isEmpty) {
         throw new NoSuchElementException("Walked off of the end...")
       }
@@ -108,6 +112,67 @@ class SerializedBatchIterator(dIn: DataInputStream)
     (0, ret)
   }
 }
+
+class KudoBatchIterator(private val din: InputStream,
+    kudo: TableSerializer,
+    deserTime: GpuMetric)
+  extends Iterator[(Int,
+    ColumnarBatch)] {
+  private var streamEof = false
+  private var nextBatch: Option[ColumnarBatch] = None
+
+  // Don't install the callback if in a unit test
+  Option(TaskContext.get()).foreach { tc =>
+    onTaskCompletion(tc) {
+      nextBatch.foreach(_.close())
+      din.close()
+    }
+  }
+
+  override def hasNext: Boolean = {
+    if (nextBatch.isEmpty && !streamEof) {
+      deserTime.ns {
+        Option(kudo.readOneTableBuffer(din)) match {
+          case Some(col) =>
+            nextBatch = Some(new KudoSerializedTableColumn(
+              col.asInstanceOf[SerializedTable])
+              .toColumnarBatch)
+            true
+          case None =>
+            streamEof = true
+            false
+        }
+      }
+    } else {
+      true
+    }
+  }
+
+  override def next(): (Int, ColumnarBatch) = {
+    if (nextBatch.isDefined) {
+      val ret = nextBatch.get
+      nextBatch = None
+      (0, ret)
+    } else {
+      throw new NoSuchElementException("Iterator done!")
+    }
+  }
+}
+
+class KudoSerializedTableColumn(val inner: SerializedTable) extends
+  GpuColumnVectorBase(NullType) {
+
+  override def close(): Unit = Option(inner).foreach(_.close())
+
+  override def hasNull: Boolean = throw new IllegalStateException("Should not be called!")
+
+  override def numNulls(): Int = throw new IllegalStateException("Should not be called!")
+
+  def toColumnarBatch: ColumnarBatch = new ColumnarBatch(Array(this),
+    inner.getHeader.getNumRows.toInt)
+}
+
+
 /**
  * Serializer for serializing `ColumnarBatch`s for use during normal shuffle.
  *
@@ -124,20 +189,25 @@ class SerializedBatchIterator(dIn: DataInputStream)
  *
  * @note The RAPIDS shuffle does not use this code.
  */
-class GpuColumnarBatchSerializer(dataSize: GpuMetric)
-    extends Serializer with Serializable {
+class GpuColumnarBatchSerializer(dataSize: GpuMetric, serTime: GpuMetric = NoopMetric,
+    deserTime: GpuMetric = NoopMetric, kudo: Option[KudoConf])
+  extends Serializer with Serializable {
   override def newInstance(): SerializerInstance =
-    new GpuColumnarBatchSerializerInstance(dataSize)
+    new GpuColumnarBatchSerializerInstance(dataSize, kudo, serTime, deserTime)
+
   override def supportsRelocationOfSerializedObjects: Boolean = true
 }
 
-private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric) extends SerializerInstance {
+private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: Option[KudoConf]
+    , serTime: GpuMetric, deserTime: GpuMetric)
+  extends SerializerInstance {
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
     private[this] val dOut: DataOutputStream =
       new DataOutputStream(new BufferedOutputStream(out))
 
     override def writeValue[T: ClassTag](value: T): SerializationStream = {
+      val start = System.nanoTime()
       val batch = value.asInstanceOf[ColumnarBatch]
       val numColumns = batch.numCols()
       val columns: Array[HostColumnVector] = new Array(numColumns)
@@ -167,17 +237,89 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric) extends Se
             }
           }
 
-          dataSize += JCudfSerialization.getSerializedSizeInBytes(columns, startRow, numRows)
-          val range = new NvtxRange("Serialize Batch", NvtxColor.YELLOW)
-          try {
-            JCudfSerialization.writeToStream(columns, dOut, startRow, numRows)
-          } finally {
-            range.close()
+//          {
+//            val dataTypes = (0 until numColumns).map(i => batch.column(i).dataType())
+//              .mkString("[", ",", "]")
+//            val hostColTypes = (0 until numColumns).map(i => columns(i).getType)
+//              .mkString("[", ",", "]")
+//            System.err.println(s"DEBUG: serializeStream, Spark data type: $dataTypes, " +
+//              s"Host data type: $hostColTypes")
+//          }
+//
+//          {
+//            val taskContext = TaskContext.get()
+//            if (taskContext != null) {
+//              val info = s"shuffle_data_for_task, stage_id: ${taskContext.stageId()}, partition "
+          //              +
+//               s"id: ${taskContext.partitionId()}, attempt number: ${taskContext.attemptNumber()}"
+//              val sb = new StringBuilder(1024)
+//
+//              columns.zipWithIndex.foreach({
+//                case (col, col_idx) =>
+//                  sb.append(s"Column $col_idx: ${col.getType}\n")
+//                  for (row <- 0 until batch.numRows()) {
+//                    val element = Option(col.getElement(startRow + row))
+//                      .map(_.toString)
+//                      .getOrElse("NULL")
+//
+//                    sb.append(s"$row: $element \n")
+//                  }
+//
+//                  sb.append("\n")
+//              })
+//
+//              System.err.println(s"\nDEBUG $info\n${sb.toString()}")
+//            }
+//          }
+
+
+          if (kudoOpt.isDefined) {
+            withResource(new NvtxRange("Serialize Batch", NvtxColor.YELLOW)) { _ =>
+
+              val kudo = kudoOpt.get.serializer()
+              try {
+                dataSize += kudo.writeToStream(columns, dOut, startRow, numRows)
+              } catch {
+                case e: Throwable =>
+//                  val sb = new StringBuilder(1024)
+//                  columns.zipWithIndex.foreach({
+//                    case (col, col_idx) =>
+//                      sb.append(s"Column $col_idx: ${col.getType}\n")
+//                      for (row <- 0 until col.getRowCount.toInt) {
+//                        val element = Option(col.getElement(row))
+//                          .map(_.toString)
+//                          .getOrElse("NULL")
+//
+//                        sb.append(s"$row: $element \n")
+//                      }
+//
+//                      sb.append("\n")
+//                  })
+//
+//                  System.err.println(s"\nDEBUG: Failed to serialize batch, " +
+//                    s"start row: $startRow, num rows: ${batch.numRows()}" +
+//                    s"\n${sb.toString()}")
+                  throw e
+              }
+            }
+          } else {
+            dataSize += JCudfSerialization.getSerializedSizeInBytes(columns, startRow, numRows)
+            val range = new NvtxRange("Serialize Batch", NvtxColor.YELLOW)
+            try {
+              JCudfSerialization.writeToStream(columns, dOut, startRow, numRows)
+            } finally {
+              range.close()
+            }
           }
         } else {
           val range = new NvtxRange("Serialize Row Only Batch", NvtxColor.YELLOW)
           try {
-            JCudfSerialization.writeRowsToStream(dOut, numRows)
+            if (kudoOpt.isDefined) {
+              val kudo = kudoOpt.get.serializer()
+              kudo.writeRowsToStream(dOut, numRows)
+            } else {
+              JCudfSerialization.writeRowsToStream(dOut, numRows)
+            }
           } finally {
             range.close()
           }
@@ -185,6 +327,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric) extends Se
       } finally {
         toClose.safeClose()
       }
+      serTime.add(System.nanoTime() - start)
       this
     }
 
@@ -220,7 +363,11 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric) extends Se
       private[this] val dIn: DataInputStream = new DataInputStream(new BufferedInputStream(in))
 
       override def asKeyValueIterator: Iterator[(Int, ColumnarBatch)] = {
-        new SerializedBatchIterator(dIn)
+        if (kudoOpt.isDefined) {
+          new KudoBatchIterator(in, kudoOpt.get.serializer(), deserTime)
+        } else {
+          new SerializedBatchIterator(dIn, deserTime)
+        }
       }
 
       override def asIterator: Iterator[Any] = {
@@ -252,8 +399,10 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric) extends Se
 
   // These methods are never called by shuffle code.
   override def serialize[T: ClassTag](t: T): ByteBuffer = throw new UnsupportedOperationException
+
   override def deserialize[T: ClassTag](bytes: ByteBuffer): T =
     throw new UnsupportedOperationException
+
   override def deserialize[T: ClassTag](bytes: ByteBuffer, loader: ClassLoader): T =
     throw new UnsupportedOperationException
 }
@@ -282,7 +431,7 @@ object SerializedTableColumn {
    * Build a `ColumnarBatch` consisting of a single [[SerializedTableColumn]] describing
    * the specified serialized table.
    *
-   * @param header header for the serialized table
+   * @param header     header for the serialized table
    * @param hostBuffer host buffer containing the table data
    * @return columnar batch to be passed to [[GpuShuffleCoalesceExec]]
    */
@@ -299,7 +448,7 @@ object SerializedTableColumn {
       val cv = batch.column(0)
       cv match {
         case serializedTableColumn: SerializedTableColumn
-            if serializedTableColumn.hostBuffer != null =>
+          if serializedTableColumn.hostBuffer != null =>
           sum += serializedTableColumn.hostBuffer.getLength
         case _ =>
       }

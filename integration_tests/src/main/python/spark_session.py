@@ -56,6 +56,7 @@ _default_conf = {
     'spark.rapids.sql.mode': 'executeongpu',
     'spark.rapids.sql.variableFloatAgg.enabled': 'false',
     'spark.sql.legacy.allowNegativeScaleOfDecimal': 'true',
+    'spark.rapids.sql.shuffle.kudo.enable': 'true',
 }
 
 def _set_all_confs(conf):

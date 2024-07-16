@@ -19,11 +19,12 @@ package com.nvidia.spark.rapids
 import java.io.File
 
 import ai.rapids.cudf.{ColumnVector, DType, HostColumnVectorCore, Table}
+import ai.rapids.cudf.DType.DTypeEnum
 import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.SparkShimImpl
 import org.scalatest.Assertions
-
 import org.apache.spark.SparkConf
+
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
@@ -103,24 +104,25 @@ object TestUtils extends Assertions {
     (0L until e.getRowCount).foreach { i =>
       assertResult(e.isNull(i))(a.isNull(i))
       if (!e.isNull(i)) {
-        e.getType match {
-          case DType.BOOL8 => assertResult(e.getBoolean(i))(a.getBoolean(i))
-          case DType.INT8 => assertResult(e.getByte(i))(a.getByte(i))
-          case DType.INT16 => assertResult(e.getShort(i))(a.getShort(i))
-          case DType.INT32 => assertResult(e.getInt(i))(a.getInt(i))
-          case DType.INT64 => assertResult(e.getLong(i))(a.getLong(i))
-          case DType.FLOAT32 => assertResult(e.getFloat(i))(a.getFloat(i))
-          case DType.FLOAT64 => assertResult(e.getDouble(i))(a.getDouble(i))
-          case DType.STRING => assertResult(e.getJavaString(i))(a.getJavaString(i))
-          case dt if dt.isDecimalType && dt.isBackedByLong =>
+        val dt = e.getType
+        e.getType.getTypeId match {
+          case DTypeEnum.BOOL8 => assertResult(e.getBoolean(i))(a.getBoolean(i))
+          case DTypeEnum.INT8  => assertResult(e.getByte(i))(a.getByte(i))
+          case DTypeEnum.INT16 => assertResult(e.getShort(i))(a.getShort(i))
+          case DTypeEnum.INT32 => assertResult(e.getInt(i))(a.getInt(i))
+          case DTypeEnum.INT64 => assertResult(e.getLong(i))(a.getLong(i))
+          case DTypeEnum.FLOAT32 => assertResult(e.getFloat(i))(a.getFloat(i))
+          case DTypeEnum.FLOAT64 => assertResult(e.getDouble(i))(a.getDouble(i))
+          case DTypeEnum.STRING => assertResult(e.getJavaString(i))(a.getJavaString(i))
+          case _ if dt.isDecimalType =>
             assertResult(e.getBigDecimal(i))(a.getBigDecimal(i))
-          case DType.LIST | DType.STRUCT =>
+          case DTypeEnum.LIST | DTypeEnum.STRUCT =>
             (0 until e.getNumChildren).foreach { childIdx =>
               val eChild = e.getChildColumnView(childIdx)
               val aChild = a.getChildColumnView(childIdx)
               compareColumns(eChild, aChild)
             }
-          case _ => throw new UnsupportedOperationException("not implemented yet")
+          case _ => throw new UnsupportedOperationException("not implemented yet: " + e.getType)
         }
       }
     }

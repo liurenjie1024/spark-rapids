@@ -511,9 +511,54 @@ public class GpuColumnVector extends GpuColumnVectorBase {
    */
   public static Schema from(StructType input) {
     Schema.Builder builder = Schema.builder();
-    input.foreach(f -> builder.column(GpuColumnVector.getNonNestedRapidsType(f.dataType()), f.name()));
+    input.indices().foreach(f -> {
+      StructField field = input.apply(f);
+      builder.column(GpuColumnVector.getNonNestedRapidsType(field.dataType()),
+          field.name() + "_" + f);
+      return f;
+    });
     return builder.build();
   }
+
+  public static Schema from(DataType[] dataTypes) {
+    Schema.Builder builder = Schema.builder();
+    visit(dataTypes, builder, 0);
+    return builder.build();
+  }
+
+  private static void visit(DataType[] dataTypes, Schema.Builder builder, int level) {
+    for (int idx = 0; idx < dataTypes.length; idx ++) {
+      DataType dt = dataTypes[idx];
+      String name = "_col_" + level + "_" + idx;
+      if (dt instanceof MapType) {
+        // MapType is list of struct in cudf, so need to handle it specially.
+        Schema.Builder listBuilder = builder.addColumn(DType.LIST, name);
+        Schema.Builder structBuilder = listBuilder.addColumn(DType.STRUCT, name + "_map");
+        MapType mt = (MapType) dt;
+        DataType[] structChildren = {mt.keyType(), mt.valueType()};
+        visit(structChildren, structBuilder, level + 1);
+      } else if (dt instanceof BinaryType) {
+        Schema.Builder listBuilder = builder.addColumn(DType.LIST, name);
+        listBuilder.addColumn(DType.UINT8, name + "_bytes");
+      } else {
+        Schema.Builder childBuilder = builder.addColumn(GpuColumnVector.getRapidsType(dt), name);
+        if (dt instanceof ArrayType) {
+          // Array (aka List)
+          DataType[] childType = {((ArrayType) dt).elementType()};
+          visit(childType, childBuilder, level + 1);
+        } else if (dt instanceof StructType) {
+          // Struct
+          StructType st = (StructType) dt;
+          DataType[] childrenTypes = new DataType[st.length()];
+          for (int i = 0; i < childrenTypes.length; i ++) {
+            childrenTypes[i] = st.apply(i).dataType();
+          }
+          visit(childrenTypes, childBuilder, level + 1);
+        }
+      }
+    }
+  }
+
 
   /**
    * Convert a ColumnarBatch to a table. The table will increment the reference count for all of
