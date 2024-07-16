@@ -237,6 +237,11 @@ abstract class GpuShuffleExchangeExecBase(
     gpuLongMetric("dataSize"), allMetrics("rapidsShuffleSerializationTime"),
     allMetrics("rapidsShuffleDeserializationTime"), gpuOutputPartitioning.serdeOnGPU,
     sparkTypes, new RapidsConf(conf).gpuTargetBatchSizeBytes)
+  private lazy val serializer: Serializer = {
+    val useKudo = RapidsConf.SHUFFLE_ENABLE_KUDO.get(conf)
+    new GpuColumnarBatchSerializer(
+      gpuLongMetric("dataSize"), useKudo)
+  }
 
   @transient lazy val inputBatchRDD: RDD[ColumnarBatch] = child.executeColumnar()
 
