@@ -178,7 +178,7 @@
                 <buildver>321</buildver>
                 <spark.version>${spark321.version}</spark.version>
                 <spark.test.version>${spark321.version}</spark.test.version>
-                <parquet.hadoop.version>1.10.1-bd1.0.68</parquet.hadoop.version>
+                <parquet.hadoop.version>1.12.2</parquet.hadoop.version>
             </properties>
             <modules>
                 <module>delta-lake/delta-20x</module>
