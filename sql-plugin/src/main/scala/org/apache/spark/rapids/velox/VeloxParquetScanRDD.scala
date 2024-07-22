@@ -16,6 +16,9 @@
 
 package org.apache.spark.rapids.velox
 
+import io.glutenproject.execution._
+import io.substrait.proto.Plan
+
 import ai.rapids.cudf.{NvtxColor, NvtxRange}
 import com.nvidia.spark.rapids.{CoalesceSizeGoal, GpuMetric}
 import com.nvidia.spark.rapids.Arm.withResource
@@ -67,6 +70,19 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
   override protected def getPartitions: Array[Partition] = scanRDD.partitions
 
   override def compute(split: Partition, context: TaskContext): Iterator[InternalRow] = {
+    split match {
+      case FirstZippedPartitionsPartition(_, inputPartition, _) => {
+        inputPartition match {
+          case GlutenPartition(_, plan, _) => {
+            val planObj = Plan.parseFrom(plan)
+            planObj.getRelationsList.forEach { relation =>
+              val root = relation.getRoot
+              logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
+            }
+          }
+        }
+      }
+    }
     val veloxCbIter = new VeloxScanMetricsIter(
       scanRDD.compute(split, context),
       veloxScanTime
