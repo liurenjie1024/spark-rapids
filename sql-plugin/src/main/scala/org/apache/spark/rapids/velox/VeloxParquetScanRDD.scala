@@ -80,6 +80,7 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
               logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
             }
           }
+          case _ =>
         }
       }
     }
