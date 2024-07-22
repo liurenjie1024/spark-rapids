@@ -1460,8 +1460,8 @@ trait ParquetPartitionReaderBase extends Logging with ScanWithMetrics
     val metadataConverter = new ParquetMetadataConverter
     blocks.foreach(block => {
       block.getColumns().forEach({ column =>
-        column.setTokenBloomFilterOffset(new java.util.ArrayList[Long]())
-        column.setTokenBloomFilterLength(new java.util.ArrayList[Long]())
+        column.setTokenBloomFilterOffset(new java.util.ArrayList[java.lang.Long]())
+        column.setTokenBloomFilterLength(new java.util.ArrayList[java.lang.Long]())
       })
     })
     val footer = new ParquetMetadata(fileMeta, blocks.asJava)

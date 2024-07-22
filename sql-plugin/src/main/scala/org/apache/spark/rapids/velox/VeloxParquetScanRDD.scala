@@ -73,7 +73,7 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
     split match {
       case FirstZippedPartitionsPartition(_, inputPartition, _) => {
         inputPartition match {
-          case GlutenPartition(_, plan, _) => {
+          case GlutenPartition(_, plan, _, _) => {
             val planObj = Plan.parseFrom(plan)
             planObj.getRelationsList.forEach { relation =>
               val root = relation.getRoot
