@@ -40,7 +40,7 @@ class DriverPluginWrapper(wrapped: DriverPlugin)
   override def init(sc: SparkContext,
                     pluginContext: PluginContext): java.util.Map[String, String] = {
     val conf = pluginContext.conf()
-    if (!conf.getBoolean(PluginWrapper.LOAD_VELOX_KEY, defaultValue = false)) {
+    if (!conf.getBoolean(PluginWrapper.LOAD_VELOX_KEY, defaultValue = true)) {
       return new java.util.HashMap[String, String]()
     }
 
