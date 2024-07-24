@@ -82,8 +82,8 @@ case class GpuShuffleExchangeExec(
     // available here means that we can more easily reference it in GpuOverrides when
     // planning future query stages when AQE is on
     Statistics(
-      sizeInBytes = BigInt(metrics("dataSize").value),
-      rowCount = Some(BigInt(metrics("numOutputRows").value))
+      sizeInBytes = metrics("dataSize").value,
+      rowCount = Some(metrics("numOutputRows").value)
     )
   }
 
