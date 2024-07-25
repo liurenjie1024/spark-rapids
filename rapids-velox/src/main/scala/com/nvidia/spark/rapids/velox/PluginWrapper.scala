@@ -53,6 +53,7 @@ class DriverPluginWrapper(wrapped: DriverPlugin)
         .filter(_ != PluginWrapper.GLUTEN_SESSION_EXTENSION_NAME)
         .mkString(",")
     )
+    conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "true")
     ret
   }
 
