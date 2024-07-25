@@ -44,7 +44,7 @@ class DriverPluginWrapper(wrapped: DriverPlugin)
       return new java.util.HashMap[String, String]()
     }
 
-    conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "false")
+    conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "true")
     val ret = wrapped.init(sc, pluginContext)
     conf.set(
       StaticSQLConf.SPARK_SESSION_EXTENSIONS.key,
@@ -53,7 +53,7 @@ class DriverPluginWrapper(wrapped: DriverPlugin)
         .filter(_ != PluginWrapper.GLUTEN_SESSION_EXTENSION_NAME)
         .mkString(",")
     )
-    conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "true")
+    conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "false")
     ret
   }
 
