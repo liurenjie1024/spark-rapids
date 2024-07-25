@@ -45,6 +45,7 @@ import com.nvidia.spark.rapids.GpuPartitioning
 
 import org.apache.spark.MapOutputStatistics
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.expressions.AttributeMap
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{ShufflePartitionSpec, SparkPlan}
@@ -83,7 +84,9 @@ case class GpuShuffleExchangeExec(
     // planning future query stages when AQE is on
     Statistics(
       sizeInBytes = metrics("dataSize").value,
-      rowCount = Some(metrics("numOutputRows").value)
+      rowCount = Some(metrics("numOutputRows").value),
+      attributeStats = AttributeMap(Nil),
+      isRuntime = false
     )
   }
 
