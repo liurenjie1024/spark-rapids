@@ -71,9 +71,10 @@ class ExecutorPluginWrapper(wrapped: ExecutorPlugin)
 
   override def init(ctx: PluginContext, extraConf: java.util.Map[String, String]): Unit = {
     val conf = ctx.conf()
-    if (conf.getBoolean(PluginWrapper.LOAD_VELOX_KEY, defaultValue = false)) {
-      conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "false")
+    if (conf.getBoolean(PluginWrapper.LOAD_VELOX_KEY, defaultValue = true)) {
+      conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "true")
       wrapped.init(ctx, extraConf)
+      conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "false")
     }
   }
 
