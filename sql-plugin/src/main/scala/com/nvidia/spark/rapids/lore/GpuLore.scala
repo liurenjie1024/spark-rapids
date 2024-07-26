@@ -27,15 +27,16 @@ import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.SparkShimImpl
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.SparkEnv
+
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.execution.{BaseSubqueryExec, ExecSubqueryExpression, ReusedSubqueryExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.adaptive.BroadcastQueryStageExec
-import org.apache.spark.sql.rapids.execution.{GpuBroadcastExchangeExec, GpuCustomShuffleReaderExec}
+import org.apache.spark.sql.rapids.execution.{GpuBroadcastExchangeExec, GpuCustomShuffleReaderExec, GpuShuffleExchangeExecBase}
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.util.SerializableConfiguration
 
@@ -62,7 +63,7 @@ trait GpuLoreRDD {
 }
 
 
-object GpuLore {
+object GpuLore extends Logging {
   /**
    * Lore id of a plan node.
    */
@@ -249,14 +250,25 @@ object GpuLore {
       sparkPlan
 
     } else {
+      val exchangeOutputSet = mutable.Set.empty[DataType]
       // We don't need to dump the output of the nodes, just tag the lore id
       sparkPlan.foreachUp {
         case g: GpuExec =>
+          g match {
+            case base: GpuShuffleExchangeExecBase =>
+              base.output
+                .map(_.dataType)
+                .foreach(exchangeOutputSet.add)
+            case _ =>
+          }
+
           nextLoreIdOf(g).foreach { loreId =>
             g.setTagValue(LORE_ID_TAG, loreId.toString)
           }
         case _ =>
       }
+
+      logWarning(s"Gpu columnar exchange output type set is: ${exchangeOutputSet}")
 
       sparkPlan
     }
