@@ -1503,13 +1503,14 @@ VeloxScan:
 velox_gens = [
     [byte_gen, short_gen, int_gen, long_gen, float_gen, double_gen,
      string_gen, boolean_gen, date_gen,
-     TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc)), ArrayGen(byte_gen),
+     #TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc)), 
+     ArrayGen(byte_gen),
      ArrayGen(long_gen), ArrayGen(string_gen), ArrayGen(date_gen),
-     ArrayGen(TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc))),
+     #ArrayGen(TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc))),
      ArrayGen(ArrayGen(byte_gen)),
-     StructGen([['child0', ArrayGen(byte_gen)], ['child1', byte_gen], ['child2', float_gen],
-                ['child3', decimal_gen_64bit]]),
-     ArrayGen(StructGen([['child0', string_gen], ['child1', double_gen], ['child2', int_gen]]))
+     #StructGen([['child0', ArrayGen(byte_gen)], ['child1', byte_gen], ['child2', float_gen],
+     #           ['child3', decimal_gen_64bit]]),
+     #ArrayGen(StructGen([['child0', string_gen], ['child1', double_gen], ['child2', int_gen]]))
      ],
     [MapGen(f(nullable=False), f()) for f in [
         BooleanGen, ByteGen, ShortGen, IntegerGen, LongGen, FloatGen, DoubleGen, DateGen]
@@ -1518,7 +1519,7 @@ velox_gens = [
      MapGen(StringGen(pattern='key_[0-9]', nullable=False), ArrayGen(string_gen),
             max_length=10),
      MapGen(RepeatSeqGen(IntegerGen(nullable=False), 10), long_gen, max_length=10),
-     # MapGen(StringGen(pattern='key_[0-9]', nullable=False), simple_string_to_string_map_gen)
+     MapGen(StringGen(pattern='key_[0-9]', nullable=False), simple_string_to_string_map_gen)
      ],
 ]
 

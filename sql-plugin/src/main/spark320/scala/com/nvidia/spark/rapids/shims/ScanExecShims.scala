@@ -27,6 +27,7 @@ package com.nvidia.spark.rapids.shims
 import com.nvidia.spark.rapids._
 
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.rapids.GpuFileSourceScanExec
 
@@ -42,7 +43,8 @@ object ScanExecShims {
           TypeSig.ARRAY + TypeSig.BINARY + TypeSig.DECIMAL_128).nested(),
         TypeSig.all),
       (fsse, conf, p, r) =>
-        if (conf.parquetVeloxReader) {
+        if (conf.parquetVeloxReader && 
+            fsse.relation.fileFormat.getClass == classOf[ParquetFileFormat]) {
           require(conf.loadVelox,
             "Velox has NOT been loaded! Please enable spark.rapids.sql.loadVelox before startup")
           require(!fsse.bucketedScan, "VeloxParquetReader do NOT support bucketedScan for now")

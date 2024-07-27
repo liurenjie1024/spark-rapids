@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst.{InternalRow, TableIdentifier}
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.rapids.GpuDataSourceScanExec
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -45,6 +46,9 @@ case class VeloxFileSourceScanExec(
     alluxioPathsMap: Option[Map[String, String]])(@transient val rapidsConf: RapidsConf)
   extends GpuDataSourceScanExec with GpuExec {
   import GpuMetric._
+
+  // All expressions are on the CPU.
+  override def gpuExpressions: Seq[Expression] = Nil
 
   private val glutenScan: FileSourceScanExecTransformer = {
     new FileSourceScanExecTransformer(
@@ -100,33 +104,41 @@ case class VeloxFileSourceScanExec(
     inputRDD :: Nil
   }
 
-  override lazy val allMetrics = Map(
-    NUM_OUTPUT_ROWS -> createMetric(ESSENTIAL_LEVEL, DESCRIPTION_NUM_OUTPUT_ROWS),
-    NUM_OUTPUT_BATCHES -> createMetric(MODERATE_LEVEL, DESCRIPTION_NUM_OUTPUT_BATCHES),
-    "numFiles" -> createMetric(ESSENTIAL_LEVEL, "number of files read"),
-    "metadataTime" -> createTimingMetric(ESSENTIAL_LEVEL, "metadata time"),
-    "filesSize" -> createSizeMetric(ESSENTIAL_LEVEL, "size of files read"),
-    "C2ROutputRows" -> createMetric(MODERATE_LEVEL, "C2ROutputRows"),
-    "C2ROutputBatches" -> createMetric(MODERATE_LEVEL, "C2ROutputBatches"),
-    "C2COutputBatches" -> createMetric(MODERATE_LEVEL, "C2COutputBatches"),
-    "VeloxOutputBatches" -> createMetric(MODERATE_LEVEL, "VeloxOutputBatches"),
-    "OutputSizeInBytes" -> createMetric(MODERATE_LEVEL, "OutputSizeInBytes"),
-    "R2CInputRows" -> createMetric(MODERATE_LEVEL, "R2CInputRows"),
-    "R2COutputRows" -> createMetric(MODERATE_LEVEL, "R2COutputRows"),
-    "R2COutputBatches" -> createMetric(MODERATE_LEVEL, "R2COutputBatches"),
-    "VeloxC2RTime" -> createTimingMetric(MODERATE_LEVEL, "VeloxC2RTime"),
-    "VeloxC2CTime" -> createNanoTimingMetric(MODERATE_LEVEL, "VeloxC2CTime"),
-    "VeloxC2CConvertTime" -> createNanoTimingMetric(MODERATE_LEVEL, "VeloxC2CConvertTime"),
-    "veloxScanTime" -> createNanoTimingMetric(MODERATE_LEVEL, "veloxScanTime"),
-    "R2CStreamTime" -> createNanoTimingMetric(MODERATE_LEVEL, "R2CStreamTime"),
-    "gpuAcquireTime" -> createNanoTimingMetric(MODERATE_LEVEL, "gpuAcquireTime"),
-    "H2DTime" -> createNanoTimingMetric(MODERATE_LEVEL, "H2DTime"),
-    "CoalesceConcatTime" -> createNanoTimingMetric(MODERATE_LEVEL, "CoalesceConcatTime"),
-    "CoalesceOpTime" -> createNanoTimingMetric(MODERATE_LEVEL, "CoalesceOpTime"),
-    "R2CTime" -> createNanoTimingMetric(MODERATE_LEVEL, "R2COpTime"),
-    FILTER_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_FILTER_TIME),
-    "scanTime" -> createTimingMetric(ESSENTIAL_LEVEL, "scan time")
-  )
+  override lazy val allMetrics: Map[String, GpuMetric] = {
+    val mapBuilder = scala.collection.mutable.Map[String, GpuMetric](
+      NUM_OUTPUT_ROWS -> createMetric(ESSENTIAL_LEVEL, DESCRIPTION_NUM_OUTPUT_ROWS),
+      NUM_OUTPUT_BATCHES -> createMetric(MODERATE_LEVEL, DESCRIPTION_NUM_OUTPUT_BATCHES),
+      "numFiles" -> createMetric(ESSENTIAL_LEVEL, "number of files read"),
+      "metadataTime" -> createTimingMetric(ESSENTIAL_LEVEL, "metadata time"),
+      "filesSize" -> createSizeMetric(ESSENTIAL_LEVEL, "size of files read"),
+      "C2ROutputRows" -> createMetric(MODERATE_LEVEL, "C2ROutputRows"),
+      "C2ROutputBatches" -> createMetric(MODERATE_LEVEL, "C2ROutputBatches"),
+      "C2COutputBatches" -> createMetric(MODERATE_LEVEL, "C2COutputBatches"),
+      "VeloxOutputBatches" -> createMetric(MODERATE_LEVEL, "VeloxOutputBatches"),
+      "OutputSizeInBytes" -> createMetric(MODERATE_LEVEL, "OutputSizeInBytes"),
+      "R2CInputRows" -> createMetric(MODERATE_LEVEL, "R2CInputRows"),
+      "R2COutputRows" -> createMetric(MODERATE_LEVEL, "R2COutputRows"),
+      "R2COutputBatches" -> createMetric(MODERATE_LEVEL, "R2COutputBatches"),
+      "VeloxC2RTime" -> createTimingMetric(MODERATE_LEVEL, "VeloxC2RTime"),
+      "VeloxC2CTime" -> createNanoTimingMetric(MODERATE_LEVEL, "VeloxC2CTime"),
+      "VeloxC2CConvertTime" -> createNanoTimingMetric(MODERATE_LEVEL, "VeloxC2CConvertTime"),
+      "veloxScanTime" -> createNanoTimingMetric(MODERATE_LEVEL, "veloxScanTime"),
+      "R2CStreamTime" -> createNanoTimingMetric(MODERATE_LEVEL, "R2CStreamTime"),
+      "gpuAcquireTime" -> createNanoTimingMetric(MODERATE_LEVEL, "gpuAcquireTime"),
+      "H2DTime" -> createNanoTimingMetric(MODERATE_LEVEL, "H2DTime"),
+      "CoalesceConcatTime" -> createNanoTimingMetric(MODERATE_LEVEL, "CoalesceConcatTime"),
+      "CoalesceOpTime" -> createNanoTimingMetric(MODERATE_LEVEL, "CoalesceOpTime"),
+      "R2CTime" -> createNanoTimingMetric(MODERATE_LEVEL, "R2COpTime"),
+      FILTER_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_FILTER_TIME),
+      "scanTime" -> createTimingMetric(ESSENTIAL_LEVEL, "scan time")
+    )
+    // Expose all metrics of the underlying GlutenScanExec
+    glutenScan.metrics.foreach { case (key, metric) =>
+      mapBuilder += s"GLUTEN_$key" -> GpuMetric.wrap(metric)
+    }
+
+    mapBuilder.toMap
+  }
 
   override protected def doExecute(): RDD[InternalRow] =
     throw new IllegalStateException(s"Row-based execution should not occur for $this")
@@ -172,8 +184,7 @@ case class VeloxFileSourceScanExec(
 
   // Filters unused DynamicPruningExpression expressions - one which has been replaced
   // with DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
-  private def filterUnusedDynamicPruningExpressions(predicates:
-                                                    Seq[Expression]): Seq[Expression] = {
+  private def filterUnusedDynamicPruningExpressions(predicates: Seq[Expression]) = {
     predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
   }
 
