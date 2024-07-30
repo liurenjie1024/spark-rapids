@@ -70,32 +70,6 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
   override protected def getPartitions: Array[Partition] = scanRDD.partitions
 
   override def compute(split: Partition, context: TaskContext): Iterator[InternalRow] = {
-    split match {
-      case FirstZippedPartitionsPartition(_, inputPartition, _) => {
-        inputPartition match {
-          case GlutenPartition(_, plan, _, _) => {
-            try {
-              val planObj = Plan.parseFrom(plan)
-              planObj.getRelationsList.forEach { relation =>
-                val root = relation.getRoot
-                logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
-              }
-            }
-          }
-          case GlutenRawPartition(_, plan, _, _) => {
-            try {
-              val planObj = Plan.parseFrom(plan)
-              planObj.getRelationsList.forEach { relation =>
-                val root = relation.getRoot
-                logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
-              }
-            }
-          }
-          case _ => {}
-        }
-      }
-      case _ => {}
-    }
     val veloxCbIter = new VeloxScanMetricsIter(
       scanRDD.compute(split, context),
       veloxScanTime
