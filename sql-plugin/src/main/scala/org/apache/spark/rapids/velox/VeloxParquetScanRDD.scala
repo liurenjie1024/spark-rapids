@@ -1,3 +1,4 @@
+```
 /*
  * Copyright (c) 2024, NVIDIA CORPORATION.
  *
@@ -74,15 +75,27 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
       case FirstZippedPartitionsPartition(_, inputPartition, _) => {
         inputPartition match {
           case GlutenPartition(_, plan, _, _) => {
-            val planObj = Plan.parseFrom(plan)
-            planObj.getRelationsList.forEach { relation =>
-              val root = relation.getRoot
-              logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
+            try {
+              val planObj = Plan.parseFrom(plan)
+              planObj.getRelationsList.forEach { relation =>
+                val root = relation.getRoot
+                logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
+              }
             }
           }
-          case _ =>
+          case GlutenRawPartition(_, plan, _, _) => {
+            try {
+              val planObj = Plan.parseFrom(plan)
+              planObj.getRelationsList.forEach { relation =>
+                val root = relation.getRoot
+                logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
+              }
+            }
+          }
+          case _ => {}
         }
       }
+      case _ => {}
     }
     val veloxCbIter = new VeloxScanMetricsIter(
       scanRDD.compute(split, context),
