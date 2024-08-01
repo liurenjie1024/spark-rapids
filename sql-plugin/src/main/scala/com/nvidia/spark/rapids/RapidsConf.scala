@@ -317,6 +317,11 @@ object RapidsReaderType extends Enumeration {
   val AUTO, COALESCING, MULTITHREADED, PERFILE = Value
 }
 
+object HashMode extends Enumeration {
+  type HashMode = Value
+  val MURMUR3, HIVE = Value
+}
+
 object RapidsConf {
   val MULTITHREAD_READ_NUM_THREADS_DEFAULT = 20
   private val registeredConfs = new ListBuffer[ConfEntry[_]]()
@@ -2402,6 +2407,23 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     .stringConf
     .createOptional
 
+  val CASE_WHEN_FUSE =
+    conf("spark.rapids.sql.case_when.fuse")
+      .doc("If when branches is greater than 2 and all then/else values in case when are string " +
+        "scalar, fuse mode improves the performance. By default this is enabled.")
+      .internal()
+      .booleanConf
+      .createWithDefault(true)
+
+  val HASH_MODE = conf("spark.rapids.sql.hashMode")
+    .doc("When INSERT OVERWRITE a hive bucketed table, we can avoid some unnecessary shuffle " +
+      "operation by specifying hashMode as hive. For example, in the case of GroupBy + Insert " +
+      "on the same bucket keys, it only shuffles once. Supported modes: [murmur3, hive].")
+    .stringConf
+    .transform(_.toUpperCase(java.util.Locale.ROOT))
+    .checkValues(HashMode.values.map(_.toString))
+    .createWithDefault(HashMode.HIVE.toString)
+
   private def printSectionHeader(category: String): Unit =
     println(s"\n### $category")
 
@@ -3248,6 +3270,10 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
     .getOrElse(Map.empty)
 
   lazy val loreDumpPath: Option[String] = get(LORE_DUMP_PATH)
+
+  lazy val caseWhenFuseEnabled: Boolean = get(CASE_WHEN_FUSE)
+
+  lazy val hashMode: HashMode.Value = HashMode.withName(get(HASH_MODE))
 
   private val optimizerDefaults = Map(
     // this is not accurate because CPU projections do have a cost due to appending values
