@@ -18,7 +18,7 @@ package org.apache.spark.sql.rapids.execution
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
-import com.nvidia.spark.rapids.{GpuBatchUtils, GpuColumnVector, GpuExpression, GpuHashPartitioningBase, GpuMetric, SpillableColumnarBatch, SpillPriorities, TaskAutoCloseableResource}
+import com.nvidia.spark.rapids.{GpuBatchUtils, GpuColumnVector, GpuExpression, GpuHashPartitioningBase, GpuMetric, HashMode, SpillableColumnarBatch, SpillPriorities, TaskAutoCloseableResource}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 
@@ -178,7 +178,8 @@ class GpuBatchSubPartitioner(
         val types = GpuColumnVector.extractTypes(gpuBatch)
         // 1) Hash partition on the batch
         val partedTable = GpuHashPartitioningBase.hashPartitionAndClose(
-          gpuBatch, inputBoundKeys, realNumPartitions, "Sub-Hash Calculate", hashSeed)
+          gpuBatch, inputBoundKeys, realNumPartitions, "Sub-Hash Calculate",
+          HashMode.MURMUR3, hashSeed)
         // 2) Split into smaller tables according to partitions
         val subTables = withResource(partedTable) { _ =>
           partedTable.getTable.contiguousSplit(partedTable.getPartitions.tail: _*)

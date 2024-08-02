@@ -21,11 +21,12 @@ import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.ShimExpression
 
 import org.apache.spark.sql.catalyst.expressions.Expression
-import org.apache.spark.sql.rapids.{GpuMurmur3Hash, GpuPmod}
+import org.apache.spark.sql.rapids.{GpuHashExpression, GpuHiveHash, GpuMurmur3Hash, GpuPmod}
 import org.apache.spark.sql.types.{DataType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-abstract class GpuHashPartitioningBase(expressions: Seq[Expression], numPartitions: Int)
+abstract class GpuHashPartitioningBase(expressions: Seq[Expression], numPartitions: Int,
+    hashMode: HashMode.Value)
   extends GpuExpression with ShimExpression with GpuPartitioning with Serializable {
 
   override def children: Seq[Expression] = expressions
@@ -35,7 +36,7 @@ abstract class GpuHashPartitioningBase(expressions: Seq[Expression], numPartitio
   def partitionInternalAndClose(batch: ColumnarBatch): (Array[Int], Array[GpuColumnVector]) = {
     val types = GpuColumnVector.extractTypes(batch)
     val partedTable = GpuHashPartitioningBase.hashPartitionAndClose(batch, expressions,
-      numPartitions, "Calculate part")
+      numPartitions, "Calculate part", hashMode)
     withResource(partedTable) { partedTable =>
       val parts = partedTable.getPartitions
       val tp = partedTable.getTable
@@ -61,7 +62,7 @@ abstract class GpuHashPartitioningBase(expressions: Seq[Expression], numPartitio
   }
 
   def partitionIdExpression: GpuExpression = GpuPmod(
-    GpuMurmur3Hash(expressions, GpuHashPartitioningBase.DEFAULT_HASH_SEED),
+    GpuHashPartitioningBase.toHashExpr(hashMode, expressions),
     GpuLiteral(numPartitions))
 }
 
@@ -69,15 +70,24 @@ object GpuHashPartitioningBase {
 
   val DEFAULT_HASH_SEED: Int = 42
 
+  private[rapids] def toHashExpr(hashMode: HashMode.Value, keys: Seq[Expression],
+      seed: Int = DEFAULT_HASH_SEED): GpuHashExpression = hashMode match {
+    case HashMode.MURMUR3 => GpuMurmur3Hash(keys, seed)
+    case HashMode.HIVE => GpuHiveHash(keys)
+    case _ => throw new Exception(s"Unsupported hash mode: $hashMode")
+  }
+
   def hashPartitionAndClose(batch: ColumnarBatch, keys: Seq[Expression], numPartitions: Int,
-      nvtxName: String, seed: Int = DEFAULT_HASH_SEED): PartitionedTable = {
+      nvtxName: String, hashMode: HashMode.Value,
+      seed: Int = DEFAULT_HASH_SEED): PartitionedTable = {
+    val hashExpr = toHashExpr(hashMode, keys, seed)
     val sb = SpillableColumnarBatch(batch, SpillPriorities.ACTIVE_ON_DECK_PRIORITY)
     RmmRapidsRetryIterator.withRetryNoSplit(sb) { sb =>
       withResource(sb.getColumnarBatch()) { cb =>
         val parts = withResource(new NvtxRange(nvtxName, NvtxColor.CYAN)) { _ =>
-          withResource(GpuMurmur3Hash.compute(cb, keys, seed)) { hash =>
+          withResource(hashExpr.columnarEval(cb)) { hash =>
             withResource(GpuScalar.from(numPartitions, IntegerType)) { partsLit =>
-              hash.pmod(partsLit, DType.INT32)
+              hash.getBase.pmod(partsLit, DType.INT32)
             }
           }
         }
