@@ -26,6 +26,7 @@ import com.nvidia.spark.rapids.Arm.withResource
 import org.apache.spark.{InterruptibleIterator, Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
@@ -74,15 +75,34 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
       case FirstZippedPartitionsPartition(_, inputPartition, _) => {
         inputPartition match {
           case GlutenPartition(_, plan, _, _) => {
-            val planObj = Plan.parseFrom(plan)
-            planObj.getRelationsList.forEach { relation =>
-              val root = relation.getRoot
-              logInfo("Reading parquet with Velox at: " + root.getInput.getRead.getLocalFiles.getItems(0).getUriFile)
+            try {
+              val planObj = Plan.parseFrom(plan)
+              logInfo("Velox Parquet Scan Plan object: \n" + planObj)
+            } catch {
+              case _: Throwable => ()
             }
           }
-          case _ =>
+          case GlutenRawPartition(_, _, splitInfos, _) => {
+            try {
+              splitInfos.foreach { splitInfo =>
+                val filePartition = splitInfo.getFilePartition()
+                filePartition match {
+                  case FilePartition(_, files) => {
+                    files.foreach { file =>
+                      logWarning("Read parquet file with Velox: " + file)
+                    }
+                  }
+                  case _ => {}
+                }
+              }
+            } catch {
+              case _: Throwable => ()
+            }
+          }
+          case _ => { }
         }
       }
+      case _ => {}
     }
     val veloxCbIter = new VeloxScanMetricsIter(
       scanRDD.compute(split, context),

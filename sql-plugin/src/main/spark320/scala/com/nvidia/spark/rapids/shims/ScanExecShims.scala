@@ -27,8 +27,11 @@ package com.nvidia.spark.rapids.shims
 import com.nvidia.spark.rapids._
 
 import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.rapids.execution.TrampolineUtil
 import org.apache.spark.sql.rapids.GpuFileSourceScanExec
+import org.apache.spark.sql.types._
 
 object ScanExecShims {
   def tagGpuFileSourceScanExecSupport(meta: SparkPlanMeta[FileSourceScanExec]): Unit =
@@ -41,15 +44,22 @@ object ScanExecShims {
         (TypeSig.commonCudfTypes + TypeSig.NULL + TypeSig.STRUCT + TypeSig.MAP +
           TypeSig.ARRAY + TypeSig.BINARY + TypeSig.DECIMAL_128).nested(),
         TypeSig.all),
-      (fsse, conf, p, r) =>
-        if (conf.parquetVeloxReader) {
+      (fsse, conf, p, r) => {
+        lazy val unsupportedType = fsse.requiredSchema.exists { field =>
+          TrampolineUtil.dataTypeExistsRecursively(field.dataType, 
+              e => e.isInstanceOf[TimestampType] || e.isInstanceOf[BinaryType])
+        }
+        if (conf.parquetVeloxReader && 
+            fsse.relation.fileFormat.getClass == classOf[ParquetFileFormat] &&
+            !unsupportedType) {
           require(conf.loadVelox,
             "Velox has NOT been loaded! Please enable spark.rapids.sql.loadVelox before startup")
           require(!fsse.bucketedScan, "VeloxParquetReader do NOT support bucketedScan for now")
           new VeloxFileSourceScanExecMeta(fsse, conf, p, r)
         } else {
           new FileSourceScanExecMeta(fsse, conf, p, r)
-        }),
+        }
+      }),
     GpuOverrides.exec[BatchScanExec](
       "The backend for most file input",
       ExecChecks(
