@@ -109,8 +109,8 @@ object GpuHashPartitioningBase {
     try {
       val hashModeMethod = cpuHp.getClass.getMethod("hashingFunctionClass")
       hashModeMethod.invoke(cpuHp) match {
-        case m if m == Murmur3Hash.getClass => Left(HashMode.MURMUR3)
-        case h if h == HiveHash.getClass => Left(HashMode.HIVE)
+        case m if m == classOf[Murmur3Hash] => Left(HashMode.MURMUR3)
+        case h if h == classOf[HiveHash] => Left(HashMode.HIVE)
         case o => Right(o.asInstanceOf[Class[_]].getSimpleName) // unsupported hash algorithm
       }
     } catch {
