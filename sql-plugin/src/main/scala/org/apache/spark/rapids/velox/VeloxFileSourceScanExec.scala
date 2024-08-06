@@ -18,6 +18,8 @@ package org.apache.spark.rapids.velox
 
 import java.util.concurrent.TimeUnit.NANOSECONDS
 
+import scala.collection.mutable
+
 import com.nvidia.spark.rapids.{GpuExec, GpuMetric, RapidsConf, TargetSize}
 import io.glutenproject.execution.{FileSourceScanExecTransformer, WholeStageTransformer}
 
@@ -47,7 +49,7 @@ case class VeloxFileSourceScanExec(
   import GpuMetric._
 
   private val glutenScan: FileSourceScanExecTransformer = {
-    new FileSourceScanExecTransformer(
+    FileSourceScanExecTransformer(
       relation,
       originalOutput,
       requiredSchema,
@@ -88,51 +90,83 @@ case class VeloxFileSourceScanExec(
 
     val glutenScanRDD = glutenPipeline.doExecuteColumnar()
 
+    // Narrow down all used metrics on the Executor side, in case transferring unnecessary metrics
+    val embeddedMetrics = {
+      val mapBuilder = mutable.Map.empty[String, GpuMetric]
+      if (rapidsConf.enableNativeVeloxConverter) {
+        commonMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
+        nativeMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
+      } else {
+        commonMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
+        roundTripMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
+      }
+      mapBuilder.toMap
+    }
+
     new VeloxParquetScanRDD(glutenScanRDD,
       output,
       requiredSchema,
       TargetSize(coalesceSizeGoal),
       rapidsConf.enableNativeVeloxConverter,
-      allMetrics)
+      embeddedMetrics)
   }
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
     inputRDD :: Nil
   }
 
-  override lazy val allMetrics = Map(
-    NUM_OUTPUT_ROWS -> createMetric(ESSENTIAL_LEVEL, DESCRIPTION_NUM_OUTPUT_ROWS),
-    NUM_OUTPUT_BATCHES -> createMetric(MODERATE_LEVEL, DESCRIPTION_NUM_OUTPUT_BATCHES),
-    "numFiles" -> createMetric(ESSENTIAL_LEVEL, "number of files read"),
-    "metadataTime" -> createTimingMetric(ESSENTIAL_LEVEL, "metadata time"),
-    "filesSize" -> createSizeMetric(ESSENTIAL_LEVEL, "size of files read"),
-    "C2ROutputRows" -> createMetric(MODERATE_LEVEL, "C2ROutputRows"),
-    "C2ROutputBatches" -> createMetric(MODERATE_LEVEL, "C2ROutputBatches"),
-    "C2COutputBatches" -> createMetric(MODERATE_LEVEL, "C2COutputBatches"),
-    "VeloxOutputBatches" -> createMetric(MODERATE_LEVEL, "VeloxOutputBatches"),
-    "OutputSizeInBytes" -> createMetric(MODERATE_LEVEL, "OutputSizeInBytes"),
-    "R2CInputRows" -> createMetric(MODERATE_LEVEL, "R2CInputRows"),
-    "R2COutputRows" -> createMetric(MODERATE_LEVEL, "R2COutputRows"),
-    "R2COutputBatches" -> createMetric(MODERATE_LEVEL, "R2COutputBatches"),
-    "VeloxC2RTime" -> createTimingMetric(MODERATE_LEVEL, "VeloxC2RTime"),
-    "VeloxC2CTime" -> createNanoTimingMetric(MODERATE_LEVEL, "VeloxC2CTime"),
-    "VeloxC2CConvertTime" -> createNanoTimingMetric(MODERATE_LEVEL, "VeloxC2CConvertTime"),
-    "veloxScanTime" -> createNanoTimingMetric(MODERATE_LEVEL, "veloxScanTime"),
-    "R2CStreamTime" -> createNanoTimingMetric(MODERATE_LEVEL, "R2CStreamTime"),
-    "gpuAcquireTime" -> createNanoTimingMetric(MODERATE_LEVEL, "gpuAcquireTime"),
-    "H2DTime" -> createNanoTimingMetric(MODERATE_LEVEL, "H2DTime"),
-    "CoalesceConcatTime" -> createNanoTimingMetric(MODERATE_LEVEL, "CoalesceConcatTime"),
-    "CoalesceOpTime" -> createNanoTimingMetric(MODERATE_LEVEL, "CoalesceOpTime"),
-    "R2CTime" -> createNanoTimingMetric(MODERATE_LEVEL, "R2COpTime"),
-    FILTER_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_FILTER_TIME),
-    "scanTime" -> createTimingMetric(ESSENTIAL_LEVEL, "scan time")
+  private val commonMetrics = Map[String, () => GpuMetric](
+    "VeloxScanTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "VeloxScanTime")),
+    "GpuAcquireTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "GpuAcquireTime")),
   )
+  private val nativeMetrics = Map[String, () => GpuMetric](
+    "C2COutputBatches" -> (() => createMetric(MODERATE_LEVEL, "C2COutputBatches")),
+    "VeloxOutputBatches" -> (() => createMetric(MODERATE_LEVEL, "VeloxOutputBatches")),
+    "OutputSizeInBytes" -> (() => createMetric(MODERATE_LEVEL, "OutputSizeInBytes")),
+    "C2CTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "C2CTime")),
+    "C2CStreamTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "C2CStreamTime")),
+    "H2DTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "H2DTime")),
+  )
+  private val roundTripMetrics = Map[String, () => GpuMetric](
+    "C2ROutputRows" -> (() => createMetric(MODERATE_LEVEL, "C2ROutputRows")),
+    "C2ROutputBatches" -> (() => createMetric(MODERATE_LEVEL, "C2ROutputBatches")),
+    "R2CInputRows" -> (() => createMetric(MODERATE_LEVEL, "R2CInputRows")),
+    "R2COutputRows" -> (() => createMetric(MODERATE_LEVEL, "R2COutputRows")),
+    "R2COutputBatches" -> (() => createMetric(MODERATE_LEVEL, "R2COutputBatches")),
+    "VeloxC2RTime" -> (() => createTimingMetric(MODERATE_LEVEL, "VeloxC2RTime")),
+    "R2CTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "R2CTime")),
+    "R2CStreamTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "R2CStreamTime")),
+  )
+
+  override lazy val allMetrics: Map[String, GpuMetric] = {
+    val mapBuilder = mutable.Map[String, GpuMetric](
+      "scanTime" -> createTimingMetric(ESSENTIAL_LEVEL, "TotalTime")
+    )
+    // Add common embedded metrics
+    commonMetrics.foreach { case (key, generator) =>
+      mapBuilder(key) = generator()
+    }
+    // NativeConverter and RoundTripConverter uses different metrics
+    if (rapidsConf.enableNativeVeloxConverter) {
+      nativeMetrics.foreach { case (key, generator) =>
+        mapBuilder(key) = generator()
+      }
+    } else {
+      roundTripMetrics.foreach { case (key, generator) =>
+        mapBuilder(key) = generator()
+      }
+    }
+    // Expose all metrics of the underlying GlutenScanExec
+    glutenScan.metrics.foreach { case (key, metric) =>
+      mapBuilder += s"GLUTEN_$key" -> GpuMetric.wrap(metric)
+    }
+    mapBuilder.toMap
+  }
 
   override protected def doExecute(): RDD[InternalRow] =
     throw new IllegalStateException(s"Row-based execution should not occur for $this")
 
   override protected def internalDoExecuteColumnar(): RDD[ColumnarBatch] = {
-    val numOutputRows = gpuLongMetric(NUM_OUTPUT_ROWS)
     val scanTime = gpuLongMetric("scanTime")
     inputRDD.asInstanceOf[RDD[ColumnarBatch]].mapPartitionsInternal { batches =>
       new Iterator[ColumnarBatch] {
@@ -148,7 +182,6 @@ case class VeloxFileSourceScanExec(
           val startNs = System.nanoTime()
           val batch = batches.next()
           scanTime += NANOSECONDS.toMillis(System.nanoTime() - startNs)
-          numOutputRows += batch.numRows()
           batch
         }
       }
