@@ -101,8 +101,11 @@ object GpuHashPartitioningBase {
     }
   }
 
-  private[rapids] def getHashModeFromCpu(
-      cpuHp: HashPartitioning): Either[HashMode.Value, String] = {
+  private[rapids] def getHashModeFromCpu(cpuHp: HashPartitioning,
+      conf: RapidsConf): Either[HashMode.Value, String] = {
+    if (!conf.isHashModePartitioningEnabled) {
+      return Left(HashMode.MURMUR3)
+    }
     // One customized Spark introduces a new field to define the hash algorithm
     // used by HashPartitioning. Since there is no shim for it, so here leverages
     // Java reflection to access it.
