@@ -2386,6 +2386,16 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     .booleanConf
     .createWithDefault(false)
 
+  val ENABLE_HASH_MODE_FOR_PARTITIONING =
+    conf("spark.rapids.sql.partitioning.hashMode.enabled")
+      .doc("When false, Only Murmur3Hash will be used for GPU hash partitioning. " +
+        "When enabled, GPU will try to infer the hash algorithm used by CPU hash " +
+        "partitioning and try to use the same one as CPU. So far only HiveHash and " +
+        "Murmur3Hash are supported on GPU.")
+      .internal()
+      .booleanConf
+      .createWithDefault(true)
+
   val TAG_LORE_ID_ENABLED = conf("spark.rapids.sql.lore.tag.enabled")
     .doc("Enable add a LORE id to each gpu plan node")
     .internal()
@@ -3256,6 +3266,8 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   lazy val testGetJsonObjectSaveRows: Int = get(TEST_GET_JSON_OBJECT_SAVE_ROWS)
 
   lazy val isDeltaLowShuffleMergeEnabled: Boolean = get(ENABLE_DELTA_LOW_SHUFFLE_MERGE)
+
+  lazy val isHashModePartitioningEnabled: Boolean = get(ENABLE_HASH_MODE_FOR_PARTITIONING)
 
   lazy val isTagLoreIdEnabled: Boolean = get(TAG_LORE_ID_ENABLED)
 

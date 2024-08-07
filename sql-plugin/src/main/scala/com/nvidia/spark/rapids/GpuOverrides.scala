@@ -3925,7 +3925,7 @@ object GpuOverrides extends Logging {
         override val childExprs: Seq[BaseExprMeta[_]] =
           hp.expressions.map(GpuOverrides.wrapExpr(_, this.conf, Some(this)))
 
-        private lazy val hashMode = GpuHashPartitioningBase.getHashModeFromCpu(hp)
+        private lazy val hashMode = GpuHashPartitioningBase.getHashModeFromCpu(hp, conf)
 
         override def tagPartForGpu(): Unit = {
           this.hashMode match {
