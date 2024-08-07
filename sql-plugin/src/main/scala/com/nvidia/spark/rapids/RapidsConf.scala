@@ -1681,6 +1681,12 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .booleanConf
     .createWithDefault(true)
 
+  val PUSH_DOWN_ALL_FILTERS_TO_VELOX = conf("spark.rapids.sql.parquet.pushDownAllFiltersToVelox")
+    .doc("Push down all filters to Velox")
+    .internal()
+    .booleanConf
+    .createWithDefault(true)
+
   val ENABLE_NATIVE_VELOX_CONVERTER = conf("spark.rapids.sql.enableNativeVeloxConverter")
     .doc("Re-formatting VeloxColumn to align with the memory layout of GpuColumn directly")
     .internal()
@@ -2825,6 +2831,8 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   lazy val avroDebugDumpAlways: Boolean = get(AVRO_DEBUG_DUMP_ALWAYS)
 
   lazy val parquetVeloxReader: Boolean = get(PARQUET_VELOX_READER)
+
+  lazy val pushDownAllFiltersToVelox: Boolean = get(PUSH_DOWN_ALL_FILTERS_TO_VELOX)
 
   lazy val enableNativeVeloxConverter: Boolean = get(ENABLE_NATIVE_VELOX_CONVERTER)
 

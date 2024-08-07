@@ -35,10 +35,11 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, RangePartitioning, SinglePartition, UnknownPartitioning}
-import org.apache.spark.sql.execution.{FilterExec, ProjectExec, SampleExec, SparkPlan}
+import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.rapids.{GpuPartitionwiseSampledRDD, GpuPoissonSampler}
 import org.apache.spark.sql.rapids.execution.TrampolineUtil
-import org.apache.spark.sql.types.{DataType, LongType}
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.random.BernoulliCellSampler
 
@@ -785,10 +786,55 @@ case class GpuFilterExecMeta(
   override val conf: RapidsConf,
   parentMetaOpt: Option[RapidsMeta[_, _, _]],
   rule: DataFromReplacementRule
-) extends SparkPlanMeta[FilterExec](filter, conf, parentMetaOpt, rule) {
+) extends SparkPlanMeta[FilterExec](filter, conf, parentMetaOpt, rule) with PredicateHelper {
+
+  def getRemainingFilters(scanFilters: Seq[Expression], filters: Seq[Expression]): Seq[Expression] =
+    (ExpressionSet(filters) -- ExpressionSet(scanFilters)).toSeq
+
+  def postProcessPushDownFilter(
+      extraFilters: Seq[Expression],
+      sparkExecNode: LeafExecNode): Seq[Expression] = {
+    sparkExecNode match {
+      case fileSourceScan: FileSourceScanExec =>
+        fileSourceScan.dataFilters ++ getRemainingFilters(
+          fileSourceScan.dataFilters,
+          extraFilters)
+      case _ =>
+        throw new IllegalStateException("Unexpected plan type")
+    }
+  }
+
+  def applyFilterPushdownToScan(filter: FilterExec): Seq[Expression] =
+    filter.child match {
+      case fileSourceScan: FileSourceScanExec =>
+        val filterConditions = splitConjunctivePredicates(filter.condition)
+        val pushDownFilters =
+          postProcessPushDownFilter(
+            filterConditions,
+            fileSourceScan)
+        pushDownFilters
+      case _ =>
+        throw new IllegalStateException("Unexpected plan type")
+    }
+
   override def convertToGpu(): GpuExec = {
-    GpuFilterExec(childExprs.head.convertToGpu(),
-      childPlans.head.convertIfNeeded())(useTieredProject = this.conf.isTieredProjectEnabled)
+    filter.child match {
+      case fsse: FileSourceScanExec if conf.pushDownAllFiltersToVelox &&
+          conf.parquetVeloxReader &&
+          fsse.asInstanceOf[FileSourceScanExec].relation.fileFormat.getClass ==
+            classOf[ParquetFileFormat] &&
+          fsse.asInstanceOf[FileSourceScanExec].requiredSchema.exists { field =>
+            TrampolineUtil.dataTypeExistsRecursively(field.dataType,
+                e => e.isInstanceOf[TimestampType] || e.isInstanceOf[BinaryType])
+          }  => {
+        val newCondition = applyFilterPushdownToScan(filter)
+        val newScan = fsse.copy(dataFilters = newCondition)
+        (new VeloxFileSourceScanExecMeta(newScan, conf, parentMetaOpt, rule)).convertToGpu()
+      }
+      case _ =>
+        GpuFilterExec(childExprs.head.convertToGpu(),
+          childPlans.head.convertIfNeeded())()
+    }
   }
 }
 
