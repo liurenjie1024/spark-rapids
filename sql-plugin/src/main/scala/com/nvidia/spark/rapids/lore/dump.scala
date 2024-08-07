@@ -45,6 +45,7 @@ class GpuLoreDumpRDD(info: LoreDumpRDDInfo, input: RDD[ColumnarBatch])
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     if (info.loreOutputInfo.outputLoreId.shouldOutputPartition(split.index)) {
+      logError(s"Dumping partition ${split.index}, lore info: $info")
       val originalIter = input.compute(split, context)
       new Iterator[ColumnarBatch] {
         var batchIdx: Int = -1
@@ -70,11 +71,17 @@ class GpuLoreDumpRDD(info: LoreDumpRDDInfo, input: RDD[ColumnarBatch])
         }
 
         private def dumpCurrentBatch(): ColumnarBatch = {
-          val outputPath = pathOfBatch(split.index, batchIdx)
-          val outputStream = outputPath.getFileSystem(info.hadoopConf.value.value)
-            .create(outputPath, false)
-          DumpUtils.dumpToParquet(nextBatch.get, outputStream)
-          nextBatch.get
+          try {
+            val outputPath = pathOfBatch(split.index, batchIdx)
+            val outputStream = outputPath.getFileSystem(info.hadoopConf.value.value)
+              .create(outputPath, false)
+            DumpUtils.dumpToParquet(nextBatch.get, outputStream)
+            nextBatch.get
+          } catch {
+            case e: Exception =>
+              logError(s"Failed to dump batch $batchIdx of partition ${split.index}", e)
+              throw e
+          }
         }
 
         private def loadNextBatch(): Unit = {
