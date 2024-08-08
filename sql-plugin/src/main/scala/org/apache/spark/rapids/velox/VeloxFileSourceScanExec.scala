@@ -49,7 +49,7 @@ case class VeloxFileSourceScanExec(
   import GpuMetric._
 
   private val glutenScan: FileSourceScanExecTransformer = {
-    FileSourceScanExecTransformer(
+    new FileSourceScanExecTransformer(
       relation,
       originalOutput,
       requiredSchema,
