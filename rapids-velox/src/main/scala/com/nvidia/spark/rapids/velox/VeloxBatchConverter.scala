@@ -25,158 +25,219 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 
-case class ColumnAllocInfo(veloxType: VeloxDataTypes.Type,
-                           readType: StructField,
-                           numRows: Int,
-                           nullCnt: Int,
-                           offsetsSize: Int,
-                           dataSize: Int,
-                           children: Seq[ColumnAllocInfo])
+case class SampleColumnInfo(posInSchema: Int,
+                            veloxType: VeloxDataTypes.Type,
+                            readType: StructField,
+                            numRows: Int,
+                            offsetsSize: Int,
+                            dataSize: Int,
+                            children: Seq[SampleColumnInfo])
 
-class VeloxBatchConverter(rt: GlutenJniWrapper,
+case class VectorBuilder(posInSchema: Int,
+                         isRoot: Boolean,
+                         field: StructField,
+                         nullBuffer: Option[HostMemoryBuffer],
+                         dataBuffer: Option[HostMemoryBuffer],
+                         offsetBuffer: Option[HostMemoryBuffer],
+                         children: Seq[VectorBuilder]) {
+
+  def build(tailInfo: Array[Long]): HostColumnVectorCore = {
+    var childVecs = new java.util.ArrayList[HostColumnVectorCore]()
+    children.foreach(b => childVecs.add(b.build(tailInfo)))
+
+    val dType = VeloxBatchConverter.mapSparkTypeToDType(field.dataType)
+    val rowCount = tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 2))
+    val nullCount = java.util.Optional.of(java.lang.Long.valueOf(
+      tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 3))))
+
+    val finalDataBuffer = dataBuffer.map { buf =>
+      val f = buf.slice(0, tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 0)))
+      buf.close()
+      f
+    }
+    val finalOffsetBuffer = offsetBuffer.map { buf =>
+      val f = buf.slice(0, tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 1)))
+      buf.close()
+      f
+    }
+    val finalNullBuffer = nullBuffer.map { buf =>
+      val f = buf.slice(0, VeloxBatchConverter.sizeOfNullMask(rowCount.toInt))
+      buf.close()
+      f
+    }
+
+    // Cast Map[child0, child1] => List[Struct[child0, child1]]
+    if (field.dataType.isInstanceOf[MapType]) {
+      val structCol = new HostColumnVectorCore(DType.STRUCT,
+        childVecs.get(0).getRowCount, java.util.Optional.of(0L),
+        null, null, null, childVecs)
+      childVecs = new java.util.ArrayList[HostColumnVectorCore]()
+      childVecs.add(structCol)
+    }
+
+    if (isRoot) {
+      new HostColumnVector(dType, rowCount, nullCount,
+        finalDataBuffer.orNull, finalNullBuffer.orNull, finalOffsetBuffer.orNull,
+        childVecs)
+    } else {
+      new HostColumnVectorCore(dType, rowCount, nullCount,
+        finalDataBuffer.orNull, finalNullBuffer.orNull, finalOffsetBuffer.orNull,
+        childVecs)
+    }
+  }
+}
+
+object VectorBuilder {
+  private val TAIL_INFO_OFFSET = 2
+  private val TAIL_INFO_STRIDE = 4
+
+  private def getTailInfoPos(colIndex: Int, infoIndex: Int): Int = {
+    colIndex * TAIL_INFO_STRIDE + TAIL_INFO_OFFSET + infoIndex
+  }
+}
+
+class VeloxBatchConverter(runtime: GlutenJniWrapper,
                           nativeHandle: Long,
                           schema: StructType,
+                          targetBatchSize: Int,
                           metrics: Map[String, SQLMetric]) extends Logging {
 
-  private var stackedBatches = 0
-  private var needToFlush = false
+  private val columnBuilders = mutable.ArrayBuffer[VectorBuilder]()
 
-  def hasStackedBatches: Boolean = stackedBatches > 0
+  private var deckFilled = true
 
-  def readyToFlush: Boolean = needToFlush
+  private var eclipsed: Long = 0L
+
+  // initialize the coalesce converter, creating TargetBuffers for the first target batch
+  {
+    resetTargetBuffers()
+  }
+
+  def isDeckFilled: Boolean = deckFilled
+
+  def hasProceedingBuilders: Boolean = columnBuilders.nonEmpty
+
+  def eclipsedNanoSecond: Long = eclipsed
+
+  def close(): Unit = {
+    require(!deckFilled, "The deck is NOT empty")
+    require(columnBuilders.isEmpty, "Please flush existing ColumnBuilders at first")
+    runtime.closeCoalesceConverter(nativeHandle)
+  }
 
   def tryAppendBatch(cb: ColumnarBatch): Boolean = {
-    if (rt.appendBatch(nativeHandle, VeloxBatchConverter.getNativeBatchHandle(cb))) {
-      stackedBatches += 1
+    require(!deckFilled, "The deck is NOT empty")
+    val start: Long = System.nanoTime()
+
+    val handle = VeloxBatchConverter.getNativeBatchHandle(cb)
+    val ret = if (runtime.appendBatch(nativeHandle, handle)) {
       true
     } else {
-      needToFlush = true
+      deckFilled = true
       false
     }
+
+    eclipsed += System.nanoTime() - start
+    ret
   }
 
-  def flushAndConvert(): Array[HostColumnVector] = {
-    // Collect the sizes of buffers required to hold the target batch for stacked velox batches.
-    val nativeAllocInfo = rt.getBufferInfo(nativeHandle)
-    // The second position holds the total bytes of RapidsBuffers to be filled.
-    metrics("OutputSizeInBytes") += nativeAllocInfo(1)
-    val allocInfo = VeloxBatchConverter.decodeNativeConvMeta(nativeAllocInfo, schema)
+  def resetTargetBuffers(): Unit = {
+    require(columnBuilders.isEmpty, "Please flush existing ColumnBuilders at first")
+    require(deckFilled, "There is NO sample batch which should be on the deck")
+    val start: Long = System.nanoTime()
 
-    // Allocate memory for HostBuffers from PinnedMemoryPool
-    val bufferInfo = mutable.ArrayBuffer[Long]()
-    bufferInfo.append(0L)
-    val result = allocInfo.map { rootInfo =>
-      val vecBuilder = createVectorBuilder(rootInfo,
-        isRoot = true,
-        seed = scala.util.Random.nextInt(10000)
-      )
-      vecBuilder.build(bufferInfo).asInstanceOf[HostColumnVector]
+    // Collect the size distribution of buffers from the sample batch
+    val sampleInfo = runtime.encodeSampleInfo(nativeHandle)
+    // Estimate the capacity of targetBatchSize in the number of source batch
+    val estimatedBatchNum: Double = targetBatchSize.toDouble / sampleInfo(1)
+    // Decode the sample distribution
+    val decodedSampleInfo = VeloxBatchConverter.decodeSampleInfo(sampleInfo, schema)
+
+    // Create ColumnBuilders while encoding the bufferPtrs
+    val bufferPtrs = mutable.ArrayBuffer[Long]()
+    bufferPtrs.append(0L)
+    decodedSampleInfo.foreach { rootInfo =>
+      val vecBuilder = createVectorBuilder(
+        bufferPtrs,
+        estimatedBatchNum,
+        rootInfo,
+        isRoot = true)
+      columnBuilders += vecBuilder
     }
-    bufferInfo(0) = bufferInfo.length
+    bufferPtrs(0) = bufferPtrs.length
 
-    // Do the conversion
-    val convertStart = System.nanoTime()
-    rt.convert(nativeHandle, bufferInfo.toArray)
-    metrics("VeloxC2CConvertTime") += System.nanoTime() - convertStart
-    stackedBatches = 0
-    needToFlush = false
+    // reset the native reference of target Buffers.
+    // NOTE: The method will consume the sample batch on the deck. So, the caller can
+    // run `tryAppendBatch` right after this method.
+    runtime.resetTargetRef(nativeHandle, bufferPtrs.toArray)
+    deckFilled = false
 
-    result
+    eclipsed += System.nanoTime() - start
   }
 
-  private def createVectorBuilder(info: ColumnAllocInfo,
-                                  isRoot: Boolean, seed: Int): VectorBuilder = {
+  /**
+   * Truncate buffer according to the tail address got from native converter. And group up these
+   * buffers as HostColumnVectors with the rowCount and nullCount also got from the native side.
+   */
+  def flushAndConvert(): Array[HostColumnVector] = {
+    require(columnBuilders.nonEmpty, "ColumnBuilders has NOT been setup")
+    val start: Long = System.nanoTime()
+
+    val tailInfo = runtime.flush(nativeHandle)
+    metrics("OutputSizeInBytes") += tailInfo(1)
+    val ret = columnBuilders.map(_.build(tailInfo).asInstanceOf[HostColumnVector])
+    columnBuilders.clear()
+
+    eclipsed += System.nanoTime() - start
+    ret.toArray
+  }
+
+  private def createVectorBuilder(bufferPtrs: mutable.ArrayBuffer[Long],
+                                  estimatedBatchNum: Double,
+                                  info: SampleColumnInfo,
+                                  isRoot: Boolean): VectorBuilder = {
 
     require(VeloxDataTypes.canConvert(info.veloxType, info.readType.dataType),
       s"can NOT convert ${info.veloxType} to ${info.readType.dataType}")
 
-    val childBuilders = info.children.map(ch => createVectorBuilder(ch, isRoot = false, seed))
-
-    val nullBuffer = if (info.nullCnt >= 0) {
-      // ColumnView.getValidityBufferSize
-      val nullMaskBytes = {
-        val actualBytes = (info.numRows + 7) >> 3
-        ((actualBytes + 63) >> 6) << 6
-      }
+    val nullBuffer = if (info.readType.nullable) {
+      val estimatedRows = (info.numRows * estimatedBatchNum).toInt
+      val nullMaskBytes = VeloxBatchConverter.sizeOfNullMask(estimatedRows)
       Some(HostMemoryBuffer.allocate(nullMaskBytes))
     } else {
       None
     }
     val dataBuffer = if (info.dataSize > 0) {
-      Some(HostMemoryBuffer.allocate(info.dataSize))
+      val estimatedDataSize = (info.dataSize * estimatedBatchNum).toInt
+      Some(HostMemoryBuffer.allocate(estimatedDataSize))
     } else {
       None
     }
     val offsetBuffer = if (info.offsetsSize > 0) {
-      Some(HostMemoryBuffer.allocate(info.offsetsSize))
+      val estimatedOffsetSize = (info.offsetsSize * estimatedBatchNum).toInt
+      Some(HostMemoryBuffer.allocate(estimatedOffsetSize))
     } else {
       None
     }
 
-    VectorBuilder(seed, isRoot,
-      info.readType,
-      info.numRows,
-      info.nullCnt max 0,
+    // bufferPtrs is in pre-order
+    val typeIdx = VeloxDataTypes.encodeSparkType(info.readType.dataType).toLong
+    bufferPtrs.append(
+      typeIdx,
+      dataBuffer.map(_.getAddress).getOrElse(0L),
+      dataBuffer.map(_.getLength).getOrElse(0L),
+      nullBuffer.map(_.getAddress).getOrElse(0L),
+      nullBuffer.map(_.getLength).getOrElse(0L),
+      offsetBuffer.map(_.getAddress).getOrElse(0L),
+      offsetBuffer.map(_.getLength).getOrElse(0L),
+    )
+
+    val childBuilders = info.children.map(ch => createVectorBuilder(
+      bufferPtrs, estimatedBatchNum, ch, isRoot = false))
+
+    VectorBuilder(info.posInSchema, isRoot, info.readType,
       nullBuffer, dataBuffer, offsetBuffer,
       childBuilders)
-  }
-
-  private case class VectorBuilder(seed: Int,
-                                   isRoot: Boolean,
-                                   field: StructField,
-                                   numRows: Int,
-                                   nullCnt: Int,
-                                   nullBuffer: Option[HostMemoryBuffer],
-                                   dataBuffer: Option[HostMemoryBuffer],
-                                   offsetBuffer: Option[HostMemoryBuffer],
-                                   children: Seq[VectorBuilder]) {
-    def build(bufferInfo: mutable.ArrayBuffer[Long]): HostColumnVectorCore = {
-      // bufferPtrs is in pre-order
-      val typeIdx = VeloxDataTypes.encodeSparkType(field.dataType).toLong
-      bufferInfo.append(
-        typeIdx,
-        dataBuffer.map(_.getAddress).getOrElse(0L),
-        dataBuffer.map(_.getLength).getOrElse(0L),
-        nullBuffer.map(_.getAddress).getOrElse(0L),
-        nullBuffer.map(_.getLength).getOrElse(0L),
-        offsetBuffer.map(_.getAddress).getOrElse(0L),
-        offsetBuffer.map(_.getLength).getOrElse(0L),
-      )
-      /*
-      logInfo(
-        s"[$seed] isRoot: $isRoot; field: $field; " +
-          s"numRows: $numRows; nullCount: $nullCnt; " +
-          s"dataBuffer: ${dataBuffer.map(_.getLength).getOrElse(0)}; " +
-          s"nullBuffer: ${nullBuffer.map(_.getLength).getOrElse(0)}; " +
-          s"offsetBuffer: ${offsetBuffer.map(_.getLength).getOrElse(0)}; " +
-          s"numChildren: ${children.length}"
-      )
-      */
-      var childVecs = new java.util.ArrayList[HostColumnVectorCore]()
-      children.foreach(b => childVecs.add(b.build(bufferInfo)))
-
-      val dType = VeloxBatchConverter.mapSparkTypeToDType(field.dataType)
-      val nullCount = java.util.Optional.of(nullCnt.toLong.asInstanceOf[java.lang.Long])
-
-      // Cast Map[child0, child1] => List[Struct[child0, child1]]
-      if (field.dataType.isInstanceOf[MapType]) {
-        val structCol = new HostColumnVectorCore(DType.STRUCT,
-          children.head.numRows.toLong, java.util.Optional.of(0L),
-          null, null, null, childVecs)
-        childVecs = new java.util.ArrayList[HostColumnVectorCore]()
-        childVecs.add(structCol)
-      }
-
-      if (isRoot) {
-        new HostColumnVector(dType, numRows.toLong, nullCount,
-          dataBuffer.orNull, nullBuffer.orNull, offsetBuffer.orNull,
-          childVecs)
-      } else {
-        new HostColumnVectorCore(dType, numRows.toLong, nullCount,
-          dataBuffer.orNull, nullBuffer.orNull, offsetBuffer.orNull,
-          childVecs)
-      }
-    }
   }
 }
 
@@ -190,8 +251,8 @@ object VeloxBatchConverter extends Logging {
     val nullableInfo = VeloxBatchConverter.encodeNullableInfo(schema)
     logDebug(s"nullableInfo: ${nullableInfo.mkString(" | ")}")
     val firstHandle = getNativeBatchHandle(firstBatch)
-    val handle = runtime.buildCoalesceConverter(firstHandle, targetBatchSize, nullableInfo)
-    new VeloxBatchConverter(runtime, handle, schema, metrics)
+    val handle = runtime.buildCoalesceConverter(firstHandle, nullableInfo)
+    new VeloxBatchConverter(runtime, handle, schema, targetBatchSize, metrics)
   }
 
   private def getNativeBatchHandle(cb: ColumnarBatch): Long = {
@@ -204,32 +265,32 @@ object VeloxBatchConverter extends Logging {
     }
   }
 
-  private def decodeNativeConvMeta(meta: Array[Long],
-                                   schema: StructType): Array[ColumnAllocInfo] = {
+  private def decodeSampleInfo(meta: Array[Long],
+                               schema: StructType): Array[SampleColumnInfo] = {
     case class DecodeHelper(
       var progress: Int,
       head: Int,
       bound: Int,
       parent: DecodeHelper,
       targetType: StructField,
-      children: mutable.Queue[ColumnAllocInfo] = mutable.Queue[ColumnAllocInfo]()
+      children: mutable.Queue[SampleColumnInfo] = mutable.Queue[SampleColumnInfo]()
     )
 
-    val tupleSize = 6
+    val tupleSize = 5
     val headLength = 2
     val vectorSize = (meta.length - headLength) / tupleSize
-    // nativeMetaPrettyPrint("getAllocSize", meta, headLength, tupleSize)
+    // nativeMetaPrettyPrint("decodeSampleInfo", meta, headLength, tupleSize)
 
-    val buildAllocInfo = (helper: DecodeHelper, children: Seq[ColumnAllocInfo]) => {
+    val buildAllocInfo = (helper: DecodeHelper, children: Seq[SampleColumnInfo]) => {
       val offset = helper.head * tupleSize + headLength
 
-      ColumnAllocInfo(
+      SampleColumnInfo(
+        posInSchema = helper.head,
         veloxType = VeloxDataTypes.decodeVeloxType(meta(offset + 1).toInt),
         readType = helper.targetType,
         numRows = meta(offset + 2).toInt,
-        nullCnt = meta(offset + 3).toInt,
-        offsetsSize = meta(offset + 4).toInt,
-        dataSize = meta(offset + 5).toInt,
+        offsetsSize = meta(offset + 3).toInt,
+        dataSize = meta(offset + 4).toInt,
         children = children)
     }
 
@@ -279,15 +340,22 @@ object VeloxBatchConverter extends Logging {
   private def nativeMetaPrettyPrint(title: String,
                                     array: Array[Long], offset: Int, step: Int): Unit = {
     val sb = mutable.StringBuilder.newBuilder
+    sb.append("==HEAD== ").append((0 until offset).map(array).mkString(" | ")).append('\n')
     (offset until array.length by step).foreach { i =>
       sb.append(s"  (${(i - offset) / step + 1}) ")
-      sb.append((i until i + step).map(array(_)).mkString(" | "))
+      sb.append((i until i + step).map(array).mkString(" | "))
       sb.append('\n')
     }
     logInfo(s"$title: \n${sb.toString()}")
   }
 
-  private def mapSparkTypeToDType(dt: DataType): DType = dt match {
+  // ColumnView.getValidityBufferSize
+  def sizeOfNullMask(rowNum: Int): Int = {
+    val actualBytes = (rowNum + 7) >> 3
+    ((actualBytes + 63) >> 6) << 6
+  }
+
+  def mapSparkTypeToDType(dt: DataType): DType = dt match {
     case _: BooleanType => DType.BOOL8
     case _: ByteType => DType.INT8
     case _: ShortType => DType.INT16

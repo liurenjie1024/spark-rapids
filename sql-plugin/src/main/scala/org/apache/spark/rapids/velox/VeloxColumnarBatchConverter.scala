@@ -16,8 +16,6 @@
 
 package org.apache.spark.rapids.velox
 
-import scala.collection.mutable
-
 import ai.rapids.cudf.{HostColumnVector, NvtxColor}
 import com.nvidia.spark.rapids.{CoalesceSizeGoal, CudfRowTransitions, GeneratedInternalRowToCudfRowIterator, GpuColumnVector, GpuMetric, GpuRowToColumnConverter, GpuSemaphore, NvtxWithMetrics, RowToColumnarIterator}
 import com.nvidia.spark.rapids.Arm._
@@ -43,55 +41,79 @@ object VeloxColumnarBatchConverter extends Logging {
 
     private var converterImpl: Option[VeloxBatchConverter] = None
 
-    private val deck = mutable.Queue[ColumnarBatch]()
+    private var srcExhausted = false
 
     private val c2cMetrics = Map(
-      "VeloxC2CConvertTime" -> GpuMetric.unwrap(metrics("VeloxC2CConvertTime")),
       "OutputSizeInBytes" -> GpuMetric.unwrap(metrics("OutputSizeInBytes")))
 
     override def hasNext(): Boolean = {
-      converterImpl.exists(_.hasStackedBatches) || !sourceExhausted
+      // either converter holds data or upstreaming iterator holds data
+      val ret = withResource(new NvtxWithMetrics("VeloxC2CHasNext", NvtxColor.WHITE,
+        metrics("C2CStreamTime"))) { _ =>
+        converterImpl.exists(c => c.isDeckFilled || c.hasProceedingBuilders) ||
+          (!srcExhausted && veloxIter.hasNext)
+      }
+      if (!ret) {
+        if (!srcExhausted) {
+          srcExhausted = true
+        }
+        converterImpl.foreach { c =>
+          // VeloxBatchConverter collects the eclipsedTime of C2C_Conversion by itself.
+          // Here we fetch the final value before closing it.
+          metrics("C2CTime") += c.eclipsedNanoSecond
+          // release the native instance when upstreaming iterator has been exhausted
+          c.close()
+          converterImpl = None
+          logConverterClose("CoalesceNativeConverter closed")
+        }
+      }
+      ret
     }
 
     override def next(): Array[HostColumnVector] = {
-      // require(hasNext(), "try to call next of an exhausted CoalesceNativeConverter")
-
-      while (true) {
-        converterImpl.foreach { impl =>
-          if (impl.readyToFlush || sourceExhausted) {
-            withResource(new NvtxWithMetrics("VeloxC2C", NvtxColor.YELLOW,
-              metrics("VeloxC2CTime"))) { _ =>
+      val ntvx = new NvtxWithMetrics("VeloxC2CNext", NvtxColor.YELLOW, metrics("C2CStreamTime"))
+      withResource(ntvx) { _ =>
+        while (true) {
+          converterImpl.foreach { impl =>
+            val needFlush = if (veloxIter.hasNext) {
+              // The only condition leading to a nonEmpty deck is targetBuffers are unset after
+              // the previous flushing
+              if (impl.isDeckFilled) {
+                impl.resetTargetBuffers()
+              }
+              // tryAppendBatch, if failed, the batch will be placed on the deck
+              metrics("VeloxOutputBatches") += 1
+              !impl.tryAppendBatch(veloxIter.next())
+            } else {
+              srcExhausted = true
+              true
+            }
+            if (needFlush) {
               metrics("C2COutputBatches") += 1
-              return impl.flushAndConvert()
+              val rapidsHostBatch = impl.flushAndConvert()
+              // It is essential to check and tidy up the deck right after flushing. Because if
+              // the next call of veloxIter.hasNext will release the batch which the deck holds
+              // its reference.
+              if (impl.isDeckFilled) {
+                impl.resetTargetBuffers()
+              }
+              return rapidsHostBatch
             }
           }
-        }
-
-        val srcBatch = if (deck.isEmpty) {
-          metrics("VeloxOutputBatches") += 1
-          veloxIter.next()
-        } else {
-          deck.dequeue()
-        }
-
-        withResource(new NvtxWithMetrics("VeloxC2C", NvtxColor.YELLOW,
-          metrics("VeloxC2CTime"))) { _ =>
-
           if (converterImpl.isEmpty) {
             converterImpl = Some(
-              VeloxBatchConverter(srcBatch, targetBatchSizeInBytes, schema, c2cMetrics))
-          } else {
-            if (!converterImpl.get.tryAppendBatch(srcBatch)) {
-              deck.enqueue(srcBatch)
-            }
+              VeloxBatchConverter(veloxIter.next(), targetBatchSizeInBytes, schema, c2cMetrics))
           }
         }
-      }
 
-      throw new RuntimeException("should NOT reach this line")
+        throw new RuntimeException("should NOT reach this line")
+      }
     }
 
-    private def sourceExhausted: Boolean = deck.isEmpty && !veloxIter.hasNext
+  }
+
+  private def logConverterClose(msg: String) = {
+    logError(s"task[${TaskContext.get().taskAttemptId()}] $msg")
   }
 
   def nativeConvert(iter: Iterator[ColumnarBatch],
@@ -110,7 +132,7 @@ object VeloxColumnarBatchConverter extends Logging {
 
     hostIter.map { hostVectors =>
       withResource(new NvtxWithMetrics("gpuAcquireC2C", NvtxColor.WHITE,
-        metrics("gpuAcquireTime"))) { _ =>
+        metrics("GpuAcquireTime"))) { _ =>
         Option(TaskContext.get()).foreach(GpuSemaphore.acquireIfNecessary)
       }
 
@@ -158,7 +180,7 @@ object VeloxColumnarBatchConverter extends Logging {
         rowIter,
         fullOutputSchema, coalesceGoal, converters,
         metrics("R2CInputRows"), metrics("R2COutputRows"), metrics("R2COutputBatches"),
-        metrics("R2CStreamTime"), metrics("R2CTime"), metrics("gpuAcquireTime"))
+        metrics("R2CStreamTime"), metrics("R2CTime"), metrics("GpuAcquireTime"))
     }
   }
 

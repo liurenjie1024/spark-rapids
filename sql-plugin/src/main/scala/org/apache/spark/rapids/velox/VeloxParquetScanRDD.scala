@@ -37,36 +37,10 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
                           outputSchema: StructType,
                           coalesceGoal: CoalesceSizeGoal,
                           useNativeConverter: Boolean,
-                          @transient metrics: Map[String, GpuMetric])
+                          metrics: Map[String, GpuMetric])
   extends RDD[InternalRow](scanRDD.sparkContext, Nil) {
 
-  private val veloxScanTime = GpuMetric.unwrap(metrics("veloxScanTime"))
-
-  private val convertMetrics = if (useNativeConverter) {
-    Map(
-      "gpuAcquireTime" -> metrics("gpuAcquireTime"),
-      "VeloxC2CTime" -> metrics("VeloxC2CTime"),
-      "VeloxC2CConvertTime" -> metrics("VeloxC2CConvertTime"),
-      "OutputSizeInBytes" -> metrics("OutputSizeInBytes"),
-      "CoalesceConcatTime" -> metrics("CoalesceConcatTime"),
-      "CoalesceOpTime" -> metrics("CoalesceOpTime"),
-      "H2DTime" -> metrics("H2DTime"),
-      "C2COutputBatches" -> metrics("C2COutputBatches"),
-      "VeloxOutputBatches" -> metrics("VeloxOutputBatches"),
-    )
-  } else {
-    Map(
-      "C2ROutputRows" -> metrics("C2ROutputRows"),
-      "C2ROutputBatches" -> metrics("C2ROutputBatches"),
-      "VeloxC2RTime" -> metrics("VeloxC2RTime"),
-      "gpuAcquireTime" -> metrics("gpuAcquireTime"),
-      "R2CStreamTime" -> metrics("R2CStreamTime"),
-      "R2CTime" -> metrics("R2CTime"),
-      "R2CInputRows" -> metrics("R2CInputRows"),
-      "R2COutputRows" -> metrics("R2COutputRows"),
-      "R2COutputBatches" -> metrics("R2COutputBatches"),
-    )
-  }
+  private val veloxScanTime = GpuMetric.unwrap(metrics("VeloxScanTime"))
 
   override protected def getPartitions: Array[Partition] = scanRDD.partitions
 
@@ -110,10 +84,10 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
     )
     val deviceIter = if (useNativeConverter) {
       VeloxColumnarBatchConverter.nativeConvert(
-        veloxCbIter, outputAttr, coalesceGoal, convertMetrics)
+        veloxCbIter, outputAttr, coalesceGoal, metrics)
     } else {
       VeloxColumnarBatchConverter.roundTripConvert(
-        veloxCbIter, outputAttr, coalesceGoal, convertMetrics)
+        veloxCbIter, outputAttr, coalesceGoal, metrics)
     }
 
     // TODO: SPARK-25083 remove the type erasure hack in data source scan
@@ -127,9 +101,7 @@ private class VeloxScanMetricsIter(iter: Iterator[ColumnarBatch],
   override def hasNext: Boolean = {
     val start = System.nanoTime()
     try {
-      withResource(new NvtxRange("velox scan hasNext", NvtxColor.WHITE)) { _ =>
-        iter.hasNext
-      }
+      iter.hasNext
     } finally {
       scanTime += System.nanoTime() - start
     }
@@ -138,12 +110,9 @@ private class VeloxScanMetricsIter(iter: Iterator[ColumnarBatch],
   override def next(): ColumnarBatch = {
     val start = System.nanoTime()
     try {
-      withResource(new NvtxRange("velox scan next", NvtxColor.BLUE)) { _ =>
-        iter.next()
-      }
+      iter.next()
     } finally {
       scanTime += System.nanoTime() - start
     }
   }
 }
-

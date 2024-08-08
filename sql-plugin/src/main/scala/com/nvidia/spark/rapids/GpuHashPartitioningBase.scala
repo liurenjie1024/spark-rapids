@@ -20,7 +20,8 @@ import ai.rapids.cudf.{DType, NvtxColor, NvtxRange, PartitionedTable}
 import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.ShimExpression
 
-import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.expressions.{Expression, HiveHash, Murmur3Hash}
+import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.rapids.{GpuHashExpression, GpuHiveHash, GpuMurmur3Hash, GpuPmod}
 import org.apache.spark.sql.types.{DataType, IntegerType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -100,4 +101,30 @@ object GpuHashPartitioningBase {
     }
   }
 
+  private[rapids] def getHashModeFromCpu(cpuHp: HashPartitioning,
+      conf: RapidsConf): Either[HashMode.Value, String] = {
+    if (!conf.isHashModePartitioningEnabled) {
+      return Left(HashMode.MURMUR3)
+    }
+    // One customized Spark introduces a new field to define the hash algorithm
+    // used by HashPartitioning. Since there is no shim for it, so here leverages
+    // Java reflection to access it.
+    try {
+      val hashModeMethod = cpuHp.getClass.getMethod("hashingFunctionClass")
+      hashModeMethod.invoke(cpuHp) match {
+        case m if m == classOf[Murmur3Hash] => Left(HashMode.MURMUR3)
+        case h if h == classOf[HiveHash] => Left(HashMode.HIVE)
+        case o => Right(o.asInstanceOf[Class[_]].getSimpleName) // unsupported hash algorithm
+      }
+    } catch {
+      // default to murmur3
+      case _: NoSuchMethodException => Left(HashMode.MURMUR3)
+    }
+  }
+
+}
+
+object HashMode extends Enumeration with Serializable {
+  type HashMode = Value
+  val MURMUR3, HIVE = Value
 }
