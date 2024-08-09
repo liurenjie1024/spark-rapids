@@ -1544,3 +1544,15 @@ def test_parquet_read_round_trip_velox(spark_tmp_path, parquet_gens, gen_rows):
             'spark.sql.sources.useV1SourceList': 'parquet',
             'spark.rapids.sql.parquet.useVelox': 'true'
         })
+
+@allow_non_gpu(any=True)
+def test_parquet_pushdown_filter(spark_tmp_path):
+    data_path = spark_tmp_path + "/PARQUET_DATA"
+    gens = [('a', long_gen), ('b', int_gen)]
+    with_cpu_session(lambda spark: gen_df(spark, gens, length=100).write.parquet(data_path))
+
+    assert_gpu_and_cpu_are_equal_collect(
+        lambda spark: spark.read.parquet(data_path).filter("from_unixtime(a) = 0"),
+        conf={"spark.rapids.sql.exec.FilterExec": "true",
+              "spark.rapids.sql.explain": "ALL",
+              })

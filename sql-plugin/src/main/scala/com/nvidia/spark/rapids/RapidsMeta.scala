@@ -191,6 +191,15 @@ abstract class RapidsMeta[INPUT <: BASE, BASE, OUTPUT <: BASE](
     }
   }
 
+  def mustWorkOnGpuIKnowWhatIAmDoing(): Unit = {
+    cannotBeReplacedReasons = Some(mutable.Set.empty)
+    wrapped match {
+      case p: SparkPlan =>
+        p.setTagValue(gpuSupportedTag, Set.empty[String])
+      case _ =>
+    }
+  }
+
   final def mustBeReplaced(because: String): Unit = {
     mustBeReplacedReasons.get.add(because)
   }

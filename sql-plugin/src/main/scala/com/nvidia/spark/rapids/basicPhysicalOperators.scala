@@ -788,6 +788,27 @@ case class GpuFilterExecMeta(
   rule: DataFromReplacementRule
 ) extends SparkPlanMeta[FilterExec](filter, conf, parentMetaOpt, rule) with PredicateHelper {
 
+  lazy val canBePushedToVelox: Boolean = {
+    filter.child match {
+      case fsse: FileSourceScanExec =>
+        conf.pushDownAllFiltersToVelox &&
+        conf.parquetVeloxReader &&
+        fsse.asInstanceOf[FileSourceScanExec].relation.fileFormat.getClass ==
+          classOf[ParquetFileFormat] &&
+        !fsse.asInstanceOf[FileSourceScanExec].requiredSchema.exists { field =>
+          TrampolineUtil.dataTypeExistsRecursively(field.dataType,
+              e => e.isInstanceOf[TimestampType] || e.isInstanceOf[BinaryType])
+        }
+      case _ => false
+    }
+  }
+
+  override def tagPlanForGpu(): Unit = {
+    if (canBePushedToVelox) {
+      mustWorkOnGpuIKnowWhatIAmDoing() // Or do I?
+    }
+  }
+
   def getRemainingFilters(scanFilters: Seq[Expression], filters: Seq[Expression]): Seq[Expression] =
     (ExpressionSet(filters) -- ExpressionSet(scanFilters)).toSeq
 
@@ -818,15 +839,9 @@ case class GpuFilterExecMeta(
     }
 
   override def convertToGpu(): GpuExec = {
+    println(s"canBePushedToVelox: $canBePushedToVelox")
     filter.child match {
-      case fsse: FileSourceScanExec if conf.pushDownAllFiltersToVelox &&
-          conf.parquetVeloxReader &&
-          fsse.asInstanceOf[FileSourceScanExec].relation.fileFormat.getClass ==
-            classOf[ParquetFileFormat] &&
-          fsse.asInstanceOf[FileSourceScanExec].requiredSchema.exists { field =>
-            TrampolineUtil.dataTypeExistsRecursively(field.dataType,
-                e => e.isInstanceOf[TimestampType] || e.isInstanceOf[BinaryType])
-          }  => {
+      case fsse: FileSourceScanExec if canBePushedToVelox => {
         val newCondition = applyFilterPushdownToScan(filter)
         val newScan = fsse.copy(dataFilters = newCondition)
         (new VeloxFileSourceScanExecMeta(newScan, conf, parentMetaOpt, rule)).convertToGpu()
