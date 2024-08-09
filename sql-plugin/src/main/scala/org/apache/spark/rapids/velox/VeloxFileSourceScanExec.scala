@@ -96,6 +96,9 @@ case class VeloxFileSourceScanExec(
       if (rapidsConf.enableNativeVeloxConverter) {
         commonMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
         nativeMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
+        if (rapidsConf.parquetVeloxPreloadCapacity > 0) {
+          preloadingMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
+        }
       } else {
         commonMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
         roundTripMetrics.keys.foreach(key => mapBuilder += key -> allMetrics(key))
@@ -107,8 +110,9 @@ case class VeloxFileSourceScanExec(
       output,
       requiredSchema,
       TargetSize(coalesceSizeGoal),
-      rapidsConf.enableNativeVeloxConverter,
-      embeddedMetrics)
+      embeddedMetrics,
+      useNativeConverter = rapidsConf.enableNativeVeloxConverter,
+      preloadedCapacity = rapidsConf.parquetVeloxPreloadCapacity)
   }
 
   override def inputRDDs(): Seq[RDD[InternalRow]] = {
@@ -126,6 +130,9 @@ case class VeloxFileSourceScanExec(
     "C2CTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "C2CTime")),
     "C2CStreamTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "C2CStreamTime")),
     "H2DTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "H2DTime")),
+  )
+  private val preloadingMetrics = Map[String, () => GpuMetric](
+    "preloadWaitTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "preloadWaitTime"))
   )
   private val roundTripMetrics = Map[String, () => GpuMetric](
     "C2ROutputRows" -> (() => createMetric(MODERATE_LEVEL, "C2ROutputRows")),
@@ -150,6 +157,11 @@ case class VeloxFileSourceScanExec(
     if (rapidsConf.enableNativeVeloxConverter) {
       nativeMetrics.foreach { case (key, generator) =>
         mapBuilder(key) = generator()
+      }
+      if (rapidsConf.parquetVeloxPreloadCapacity > 0) {
+        preloadingMetrics.foreach { case (key, generator) =>
+          mapBuilder(key) = generator()
+        }
       }
     } else {
       roundTripMetrics.foreach { case (key, generator) =>

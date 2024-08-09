@@ -243,11 +243,11 @@ class VeloxBatchConverter(runtime: GlutenJniWrapper,
 
 object VeloxBatchConverter extends Logging {
 
-  def apply(firstBatch: ColumnarBatch,
+  def apply(runtime: GlutenJniWrapper,
+            firstBatch: ColumnarBatch,
             targetBatchSize: Int,
             schema: StructType,
             metrics: Map[String, SQLMetric]): VeloxBatchConverter = {
-    val runtime = GlutenJniWrapper.create()
     val nullableInfo = VeloxBatchConverter.encodeNullableInfo(schema)
     logDebug(s"nullableInfo: ${nullableInfo.mkString(" | ")}")
     val firstHandle = getNativeBatchHandle(firstBatch)

@@ -1693,6 +1693,13 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .booleanConf
     .createWithDefault(true)
 
+  val PARQUET_VELOX_PRELOAD_CAP = conf("spark.rapids.sql.parquet.veloxPreloadedBatches")
+    .doc("Preloading capacity of VeloxParquetScan. If > 0, will enable preloading" +
+      " VeloxScanIterator asynchronously in a separate thread")
+    .internal()
+    .integerConf
+    .createWithDefault(0)
+
   val LOAD_VELOX = conf("spark.rapids.sql.loadVelox")
     .doc("Load Velox (through Gluten) as a spark driver plugin")
     .startupOnly()
@@ -2845,6 +2852,8 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   lazy val pushDownAllFiltersToVelox: Boolean = get(PUSH_DOWN_ALL_FILTERS_TO_VELOX)
 
   lazy val enableNativeVeloxConverter: Boolean = get(ENABLE_NATIVE_VELOX_CONVERTER)
+
+  lazy val parquetVeloxPreloadCapacity: Int = get(PARQUET_VELOX_PRELOAD_CAP)
 
   lazy val loadVelox: Boolean = get(LOAD_VELOX)
 
