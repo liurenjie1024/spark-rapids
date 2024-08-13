@@ -18,7 +18,7 @@ package com.nvidia.spark.rapids
 
 import scala.annotation.tailrec
 import scala.collection.mutable
-import scala.collection.mutable.ListBuffer
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 
 import ai.rapids.cudf
 import ai.rapids.cudf.{NvtxColor, NvtxRange}
@@ -26,7 +26,6 @@ import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.GpuAggregateIterator.{computeAggregateAndClose, computeAggregateWithoutPreprocessAndClose, concatenateBatches}
 import com.nvidia.spark.rapids.GpuMetric._
 import com.nvidia.spark.rapids.GpuOverrides.pluginSupportedOrderableSig
-import com.nvidia.spark.rapids.RapidsConf.AggFallbackAlgorithm
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.RmmRapidsRetryIterator.{splitSpillableInHalfByRows, withRetry, withRetryNoSplit}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
@@ -36,7 +35,7 @@ import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, AttributeSeq, AttributeSet, Expression, ExprId, If, NamedExpression, NullsFirst, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, AttributeSeq, AttributeSet, Expression, ExprId, If, NamedExpression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical.{AllTuples, ClusteredDistribution, Distribution, HashPartitioning, Partitioning, UnspecifiedDistribution}
@@ -85,10 +84,9 @@ object AggregateUtils extends Logging {
   /**
    * Computes a target input batch size based on the assumption that computation can consume up to
    * 4X the configured batch size.
-   *
-   * @param confTargetSize  user-configured maximum desired batch size
-   * @param inputTypes      input batch schema
-   * @param outputTypes     output batch schema
+   * @param confTargetSize user-configured maximum desired batch size
+   * @param inputTypes input batch schema
+   * @param outputTypes output batch schema
    * @param isReductionOnly true if this is a reduction-only aggregation without grouping
    * @return maximum target batch size to keep computation under the 4X configured batch limit
    */
@@ -97,6 +95,7 @@ object AggregateUtils extends Logging {
       inputTypes: Seq[DataType],
       outputTypes: Seq[DataType],
       isReductionOnly: Boolean): Long = {
+
     def typesToSize(types: Seq[DataType]): Long =
       types.map(GpuBatchUtils.estimateGpuMemory(_, nullable = false, rowCount = 1)).sum
 
@@ -125,7 +124,6 @@ object AggregateUtils extends Logging {
     // Finally compute the input target batching size taking into account the cudf row limits
     Math.min(inputRowSize * maxRows, Int.MaxValue)
   }
-
 
   /**
    * Concatenate batches together and perform a merge aggregation on the result. The input batches
@@ -206,6 +204,152 @@ object AggregateUtils extends Logging {
     wasBatchMerged
   }
 
+  /**
+   * Stream read the input batches, merge them into larger batches if possible,
+   * and repartition them into buckets. Each bucket will be less or equal to targetMergeBatchSize
+   */
+  def streamMergeAndRepartition(
+      aggregatedBatches: Iterator[SpillableColumnarBatch],
+      metrics: GpuHashAggregateMetrics,
+      targetMergeBatchSize: Long,
+      helper: AggHelper,
+      hashKeys: Seq[GpuExpression],
+      hashBucketNum: Int,
+      hashSeed: Int,
+      batchesByBucket: ArrayBuffer[AutoClosableArrayBuffer[SpillableColumnarBatch]]
+  ): Boolean = {
+
+    var sizeSoFar = 0L
+    val batchesToConcat: mutable.ArrayBuffer[SpillableColumnarBatch] = mutable.ArrayBuffer.empty
+    var stagingBatch: Option[SpillableColumnarBatch] = None
+
+    var repartitionHappened = false
+    if (hashSeed > 200) {
+      throw new IllegalStateException("Too many times of repartition, may hit a bug?")
+    }
+
+    def repartitionAndClose(batch: SpillableColumnarBatch): Unit = {
+
+//      if (!aggregatedBatches.hasNext && batchesByBucket.forall(_.size() == 0)
+//          && stagingBatch.isEmpty && batchesToConcat.isEmpty) {
+//        // If this is the only batch (after merging neighbours) to be repartitioned,
+//        // we can just add it to the first bucket and skip repartitioning.
+//        // This is a common case when total input size can fit into a single batch.
+//        batchesByBucket.head.append(batch)
+//        return
+//      }
+
+      withResource(new NvtxWithMetrics("agg repartition",
+        NvtxColor.CYAN, metrics.repartitionTime)) { _ =>
+
+        withResource(new GpuBatchSubPartitioner(
+          Seq(batch).map(batch => {
+            withResource(batch) { _ =>
+              batch.getColumnarBatch()
+            }
+          }).iterator,
+          hashKeys, hashBucketNum, hashSeed, "aggRepartition")) {
+          partitioner => {
+            (0 until partitioner.partitionsCount).foreach { id =>
+              closeOnExcept(batchesByBucket) { _ => {
+                val newBatches = partitioner.releaseBatchesByPartition(id)
+                newBatches.foreach { newBatch =>
+                  if (newBatch.numRows() > 0) {
+                    batchesByBucket(id).append(newBatch)
+                  } else {
+                    newBatch.safeClose()
+                  }
+                }
+              }
+              }
+            }
+          }
+        }
+      }
+      repartitionHappened = true
+    }
+
+    def handleBatchesToConcat(): Unit = {
+      if (batchesToConcat.size == 1) {
+        repartitionAndClose(batchesToConcat.head)
+        batchesToConcat.clear()
+        return
+      }
+
+      val concat = concatenateAndMerge(batchesToConcat, metrics, helper)
+      batchesToConcat.clear()
+      if (concat.sizeInBytes > targetMergeBatchSize * 0.5) {
+        repartitionAndClose(concat)
+      } else {
+        // If less than half of the target size,
+        // we can wait for more batches to merge before repartition
+
+        if (stagingBatch.isEmpty) {
+          stagingBatch = Some(concat)
+        } else {
+          val concatWithStaged =
+            concatenateAndMerge(ArrayBuffer.apply(stagingBatch.get, concat), metrics, helper)
+          if (concatWithStaged.sizeInBytes > targetMergeBatchSize * 0.5) {
+            stagingBatch = None
+            repartitionAndClose(concatWithStaged)
+          } else {
+            // Keep waiting for more batches to merge
+            stagingBatch = Some(concatWithStaged)
+          }
+        }
+      }
+    }
+
+    while (aggregatedBatches.hasNext) {
+      val next = aggregatedBatches.next()
+      if (next.sizeInBytes >= targetMergeBatchSize) {
+        repartitionAndClose(next)
+      } else {
+        sizeSoFar += next.sizeInBytes
+        if (sizeSoFar > targetMergeBatchSize) {
+          handleBatchesToConcat()
+          sizeSoFar = next.sizeInBytes
+        }
+        batchesToConcat += next
+      }
+    }
+
+    if (batchesToConcat.nonEmpty) {
+      handleBatchesToConcat()
+    }
+    stagingBatch.foreach(repartitionAndClose)
+
+    // Deal with the over sized buckets
+    if (repartitionHappened &&
+        batchesByBucket.exists(
+          bucket => bucket.map(_.sizeInBytes).sum > targetMergeBatchSize)
+    ) {
+      logDebug("Some of the repartition buckets are over sized, trying to split them")
+
+      val newBuckets = batchesByBucket.flatMap(bucket => {
+        if (bucket.map(_.sizeInBytes).sum > targetMergeBatchSize
+          && !bucket.forall(_.numRows() == 1) // If so, repartition will not help anymore
+        ) {
+          val nextLayerBuckets =
+            ArrayBuffer.fill(hashBucketNum)(new AutoClosableArrayBuffer[SpillableColumnarBatch]())
+          // Recursively merge and repartition the over sized bucket
+          repartitionHappened =
+            streamMergeAndRepartition(
+              bucket.iterator, metrics, targetMergeBatchSize,
+              helper, hashKeys, hashBucketNum, hashSeed + 7, nextLayerBuckets).
+              ||(repartitionHappened)
+          nextLayerBuckets
+        } else {
+          ArrayBuffer.apply(bucket)
+        }
+      })
+      batchesByBucket.clear()
+      batchesByBucket.appendAll(newBuckets)
+      newBuckets.clear()
+    }
+
+    repartitionHappened
+  }
 
   /**
    * Attempt to merge adjacent batches in the aggregatedBatches queue until either there is only
@@ -260,7 +404,7 @@ object AggregateUtils extends Logging {
 case class GpuHashAggregateMetrics(
     numOutputRows: GpuMetric,
     numOutputBatches: GpuMetric,
-    numTasksFallBacked: GpuMetric,
+    numTasksRepartitioned: GpuMetric,
     opTime: GpuMetric,
     computeAggTime: GpuMetric,
     concatTime: GpuMetric,
@@ -684,8 +828,8 @@ object GpuAggFirstPassIterator {
       metrics: GpuHashAggregateMetrics
   ): Iterator[SpillableColumnarBatch] = {
     val preprocessProjectIter = cbIter.map { cb =>
-      val sb = SpillableColumnarBatch (cb, SpillPriorities.ACTIVE_ON_DECK_PRIORITY)
-      aggHelper.preStepBound.projectAndCloseWithRetrySingleBatch (sb)
+      val sb = SpillableColumnarBatch(cb, SpillPriorities.ACTIVE_ON_DECK_PRIORITY)
+      aggHelper.preStepBound.projectAndCloseWithRetrySingleBatch(sb)
     }
     computeAggregateWithoutPreprocessAndClose(metrics, preprocessProjectIter, aggHelper)
   }
@@ -737,7 +881,7 @@ object GpuAggFinalPassIterator {
     }
 
     // allAttributes can be different things, depending on aggregation mode:
-    // - Partial mode: grouping key + cudf aggregates (e.g. no avg, intead sum::count
+    // - Partial mode: grouping key + cudf aggregates (e.g. no avg, instead sum::count
     // - Final mode: grouping key + spark aggregates (e.g. avg)
     val finalAttributes = groupingAttributes ++ aggregateAttributes
 
@@ -818,17 +962,21 @@ object GpuAggFinalPassIterator {
 /**
  * Iterator that takes another columnar batch iterator as input and emits new columnar batches that
  * are aggregated based on the specified grouping and aggregation expressions. This iterator tries
- * to perform a hash-based aggregation but is capable of falling back to a sort-based aggregation
- * which can operate on data that is either larger than can be represented by a cudf column or
- * larger than can fit in GPU memory.
+ * to perform a hash-based aggregation but is capable of falling back to a repartition-based
+ * aggregation which can operate on data that is either larger than can be represented by a cudf
+ * column or larger than can fit in GPU memory.
  *
- * The iterator starts by pulling all batches from the input iterator, performing an initial
- * projection and aggregation on each individual batch via `aggregateInputBatches()`. The resulting
- * aggregated batches are cached in memory as spillable batches. Once all input batches have been
- * aggregated, `tryMergeAggregatedBatches()` is called to attempt a merge of the aggregated batches
- * into a single batch. If this is successful then the resulting batch can be returned, otherwise
- * `buildSortFallbackIterator` is used to sort the aggregated batches by the grouping keys and
- * performs a final merge aggregation pass on the sorted batches.
+ * In general, GpuMergeAggregateIterator works in this flow:
+ *
+ * (1) The iterator starts by pulling all batches from the input iterator, performing an initial
+ * projection and aggregation on each individual batch via `GpuAggFirstPassIterator`, we call it
+ * "First Pass Aggregate".
+ * (2) Then the batches after first pass agg is sent to "streamMergeAndRepartition", where it tries
+ * to merge & aggregate the neighbour batches into a single batch, and repartition the batch into
+ * fixed size buckets. Recursive repartition will be applied on over-sized buckets until each bucket
+ * is within the target size. We call this phase "Second Pass Aggregate".
+ * (3) At "Third Pass Aggregate", we take each bucket and perform a final aggregation on all batches
+ * in the bucket, check "RepartitionAggregateIterator" for details.
  *
  * @param firstPassIter iterator that has done a first aggregation pass over the input data.
  * @param inputAttributes input attributes to identify the input columns from the input batches
@@ -842,8 +990,6 @@ object GpuAggFinalPassIterator {
  * @param useTieredProject user-specified option to enable tiered projections
  * @param allowNonFullyAggregatedOutput if allowed to skip third pass Agg
  * @param skipAggPassReductionRatio skip if the ratio of rows after a pass is bigger than this value
- * @param aggFallbackAlgorithm use sort-based fallback or repartition-based fallback
- *                             for oversize agg
  * @param localInputRowsCount metric to track the number of input rows processed locally
  */
 class GpuMergeAggregateIterator(
@@ -859,20 +1005,22 @@ class GpuMergeAggregateIterator(
     useTieredProject: Boolean,
     allowNonFullyAggregatedOutput: Boolean,
     skipAggPassReductionRatio: Double,
-    aggFallbackAlgorithm: AggFallbackAlgorithm.Value,
     localInputRowsCount: LocalGpuMetric)
-    extends Iterator[ColumnarBatch] with AutoCloseable with Logging {
+  extends Iterator[ColumnarBatch] with AutoCloseable with Logging {
   private[this] val isReductionOnly = groupingExpressions.isEmpty
   private[this] val targetMergeBatchSize = computeTargetMergeBatchSize(configuredTargetBatchSize)
-  private[this] val aggregatedBatches = ListBuffer.empty[SpillableColumnarBatch]
-  private[this] var outOfCoreIter: Option[GpuOutOfCoreSortIterator] = None
-  private[this] var repartitionIter: Option[RepartitionAggregateIterator] = None
 
-  /** Iterator for fetching aggregated batches either if:
-   * 1. a sort-based/repartition-based fallback has occurred
-   * 2. skip third pass agg has occurred
-   **/
-  private[this] var fallbackIter: Option[Iterator[ColumnarBatch]] = None
+  private[this] val defaultHashBucketNum = 16
+  private[this] val defaultHashSeed = 107
+  private[this] val batchesByBucket =
+    ArrayBuffer.fill(defaultHashBucketNum)(new AutoClosableArrayBuffer[SpillableColumnarBatch]())
+
+  private[this] var firstBatchChecked = false
+  private[this] var reconstructedFirstPassIter: Option[Iterator[SpillableColumnarBatch]] = None
+
+  private[this] var bucketIter: Option[RepartitionAggregateIterator] = None
+
+  private[this] var backupIter: Option[Iterator[ColumnarBatch]] = None
 
   /** Whether a batch is pending for a reduction-only aggregation */
   private[this] var hasReductionOnlyBatch: Boolean = isReductionOnly
@@ -884,329 +1032,203 @@ class GpuMergeAggregateIterator(
     }
   }
 
+  def getFirstPassIter: Iterator[SpillableColumnarBatch] =
+    reconstructedFirstPassIter.getOrElse(firstPassIter)
+
   override def hasNext: Boolean = {
-    fallbackIter.map(_.hasNext).getOrElse {
+    backupIter.map(_.hasNext).getOrElse {
       // reductions produce a result even if the input is empty
-      hasReductionOnlyBatch || aggregatedBatches.nonEmpty || firstPassIter.hasNext
+      hasReductionOnlyBatch || getFirstPassIter.hasNext
     }
   }
 
   override def next(): ColumnarBatch = {
-    fallbackIter.map(_.next()).getOrElse {
-      var shouldSkipThirdPassAgg = false
+    backupIter.map(_.next()).getOrElse {
 
-      // aggregate and merge all pending inputs
-      if (firstPassIter.hasNext) {
-        // first pass agg
-        val rowsAfterFirstPassAgg = aggregateInputBatches()
+      // Handle reduction-only aggregation
+      if (isReductionOnly) {
+        val batches = ArrayBuffer.apply[SpillableColumnarBatch]()
+        while (getFirstPassIter.hasNext) {
+          batches += getFirstPassIter.next()
+        }
+        AggregateUtils.tryMergeAggregatedBatches(
+          batches, forceMergeRegardlessOfOversize = true, metrics,
+          targetMergeBatchSize, concatAndMergeHelper)
+        if (batches.size > 1 || (batches.size == 1 && batches.head.numRows() > 1)) {
+          throw new IllegalStateException(
+            "Expected at most a single batch with single row, but got " +
+              s"${batches.size} batches, with head batch having ${batches.head.numRows()} rows")
+        }
 
-        // by now firstPassIter has been traversed, so localInputRowsCount is finished updating
-        if (isReductionOnly ||
-          skipAggPassReductionRatio * localInputRowsCount.value >= rowsAfterFirstPassAgg) {
-          // second pass agg
-          AggregateUtils.tryMergeAggregatedBatches(
-            aggregatedBatches, isReductionOnly,
-            metrics, targetMergeBatchSize, concatAndMergeHelper)
-
-          val rowsAfterSecondPassAgg = aggregatedBatches.foldLeft(0L) {
-            (totalRows, batch) => totalRows + batch.numRows()
+        if (batches.size == 1 && batches.head.numRows() == 1) {
+          hasReductionOnlyBatch = false
+          return withResource(batches.head) { cb =>
+            cb.getColumnarBatch()
           }
-          shouldSkipThirdPassAgg =
-            rowsAfterSecondPassAgg > skipAggPassReductionRatio * rowsAfterFirstPassAgg
         } else {
-          shouldSkipThirdPassAgg = true
-          logInfo(s"Rows after first pass aggregation $rowsAfterFirstPassAgg exceeds " +
-            s"${skipAggPassReductionRatio * 100}% of " +
-            s"localInputRowsCount ${localInputRowsCount.value}, skip the second pass agg")
+          hasReductionOnlyBatch = false
+          return generateEmptyReductionBatch()
         }
       }
 
-      if (aggregatedBatches.size > 1) {
+      // Handle the case of skipping second and third pass of aggregation
+      // This only work when spark.rapids.sql.agg.skipAggPassReductionRatio < 1
+      if (!firstBatchChecked && getFirstPassIter.hasNext
+        && allowNonFullyAggregatedOutput) {
+        firstBatchChecked = true
+
+        val next = getFirstPassIter.next()
+        // It's only based on first batch of first pass agg, so it's an estimate
+        val firstPassReductionRatioEstimate = next.numRows() / localInputRowsCount.value
+        if (firstPassReductionRatioEstimate > skipAggPassReductionRatio) {
+          logDebug("Skipping second and third pass aggregation due to " +
+            "too high reduction ratio in first pass: " +
+            s"$firstPassReductionRatioEstimate")
+          // if so, skip any aggregation, return the origin batch directly
+
+          val iter = getFirstPassIter
+          backupIter = Some(
+            (Iterator.single(next) ++ iter).map(cb => {
+              withResource(cb) { cb =>
+                cb.getColumnarBatch()
+              }
+            }))
+          return backupIter.get.next()
+        } else {
+          // As if nothing happened, put the first batch back to the iterator
+          val iter = getFirstPassIter
+          reconstructedFirstPassIter = Some(Iterator.single(next) ++ iter)
+        }
+      }
+      firstBatchChecked = true
+
+      val groupingAttributes = groupingExpressions.map(_.toAttribute)
+      val aggBufferAttributes = groupingAttributes ++
+        aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes)
+      val hashKeys: Seq[GpuExpression] =
+        GpuBindReferences.bindGpuReferences(groupingAttributes, aggBufferAttributes.toSeq)
+
+      val repartitionHappened = AggregateUtils.streamMergeAndRepartition(
+        getFirstPassIter, metrics, targetMergeBatchSize, concatAndMergeHelper,
+        hashKeys, defaultHashBucketNum, defaultHashSeed, batchesByBucket)
+      if (repartitionHappened) {
+        metrics.numTasksRepartitioned += 1
+      }
+
+      val totalRows = batchesByBucket.flatMap(_.map(_.numRows())).sum
+      if (batchesByBucket.exists(_.size() > 1)) {
         // Unable to merge to a single output, so must fall back
-        if (allowNonFullyAggregatedOutput && shouldSkipThirdPassAgg) {
-          // skip third pass agg, return the aggregated batches directly
-          logInfo(s"Rows after second pass aggregation exceeds " +
-            s"${skipAggPassReductionRatio * 100}% of " +
-            s"rows after first pass, skip the third pass agg")
-          fallbackIter = Some(new Iterator[ColumnarBatch] {
-            override def hasNext: Boolean = aggregatedBatches.nonEmpty
+        backupIter = Some(buildBucketIterator())
+        backupIter.get.next()
+      } else if (totalRows == 0) {
+        throw new NoSuchElementException("batches exhausted")
+      } else {
+        hasReductionOnlyBatch = false
+        // None of bucket has more than one batch, so we can just return the single batch
+        // This is the "most happy path", containing 2 situations:
+        // 1) repartition happened, but all buckets have <= 1 batch
+        // 2) repartition didn't happen, only first bucket contains a single batch
+        backupIter = Some(
+          new Iterator[ColumnarBatch] {
+            override def hasNext: Boolean = batchesByBucket.exists(_.size() > 0)
 
             override def next(): ColumnarBatch = {
-              withResource(aggregatedBatches.remove(0)) { spillableBatch =>
-                spillableBatch.getColumnarBatch()
-              }
+              batchesByBucket.collectFirst(
+                { case bucket if bucket.size() > 0 =>
+                  val last = bucket.removeLast()
+                  withResource(last) { _ =>
+                    last.getColumnarBatch()
+                  }
+                }
+              ).get
             }
           })
-        } else {
-          // fallback to sort agg, this is the third pass agg
-          aggFallbackAlgorithm match {
-            case AggFallbackAlgorithm.REPARTITION =>
-              fallbackIter = Some(buildRepartitionFallbackIterator())
-            case AggFallbackAlgorithm.SORT =>
-              fallbackIter = Some(buildSortFallbackIterator())
-          }
-        }
-        fallbackIter.get.next()
-      } else if (aggregatedBatches.isEmpty) {
-        if (hasReductionOnlyBatch) {
-          hasReductionOnlyBatch = false
-          generateEmptyReductionBatch()
-        } else {
-          throw new NoSuchElementException("batches exhausted")
-        }
-      } else {
-        // this will be the last batch
-        hasReductionOnlyBatch = false
-        withResource(aggregatedBatches.remove(0)) { spillableBatch =>
-          spillableBatch.getColumnarBatch()
-        }
+        backupIter.get.next
       }
     }
   }
 
   override def close(): Unit = {
-    aggregatedBatches.foreach(_.safeClose())
-    aggregatedBatches.clear()
-    outOfCoreIter.foreach(_.close())
-    outOfCoreIter = None
-    repartitionIter.foreach(_.close())
-    repartitionIter = None
-    fallbackIter = None
+    batchesByBucket.foreach(_.close())
+    batchesByBucket.clear()
+    bucketIter.foreach(_.close())
+    bucketIter = None
+    backupIter = None
     hasReductionOnlyBatch = false
   }
 
   private def computeTargetMergeBatchSize(confTargetSize: Long): Long = {
     val mergedTypes = groupingExpressions.map(_.dataType) ++ aggregateExpressions.map(_.dataType)
-    AggregateUtils.computeTargetBatchSize(confTargetSize, mergedTypes, mergedTypes,isReductionOnly)
-  }
-
-  /** Aggregate all input batches and place the results in the aggregatedBatches queue. */
-  private def aggregateInputBatches(): Long = {
-    var rowsAfter = 0L
-    // cache everything in the first pass
-    while (firstPassIter.hasNext) {
-      val batch = firstPassIter.next()
-      rowsAfter += batch.numRows()
-      aggregatedBatches += batch
-    }
-    rowsAfter
+    AggregateUtils.computeTargetBatchSize(confTargetSize, mergedTypes, mergedTypes, isReductionOnly)
   }
 
   private lazy val concatAndMergeHelper =
     new AggHelper(inputAttributes, groupingExpressions, aggregateExpressions,
       forceMerge = true, useTieredProject = useTieredProject)
 
-  private def cbIteratorStealingFromBuffer(input: ListBuffer[SpillableColumnarBatch]) = {
-    val aggregatedBatchIter = new Iterator[ColumnarBatch] {
-      override def hasNext: Boolean = input.nonEmpty
-
-      override def next(): ColumnarBatch = {
-        withResource(input.remove(0)) { spillable =>
-          spillable.getColumnarBatch()
-        }
-      }
-    }
-    aggregatedBatchIter
-  }
-
-  private case class RepartitionAggregateIterator(
-      inputBatches: ListBuffer[SpillableColumnarBatch],
-      hashKeys: Seq[GpuExpression],
-      targetSize: Long,
-      opTime: GpuMetric,
-      repartitionTime: GpuMetric) extends Iterator[ColumnarBatch]
+  private case class RepartitionAggregateIterator(opTime: GpuMetric) extends Iterator[ColumnarBatch]
     with AutoCloseable {
 
-    case class AggregatePartition(batches: ListBuffer[SpillableColumnarBatch], seed: Int)
+    private case class AggregatePartition(
+        batches: AutoClosableArrayBuffer[SpillableColumnarBatch])
       extends AutoCloseable {
+
       override def close(): Unit = {
         batches.safeClose()
       }
 
-      def totalRows(): Long = batches.map(_.numRows()).sum
-
-      def totalSize(): Long = batches.map(_.sizeInBytes).sum
-
       def areAllBatchesSingleRow: Boolean = {
         batches.forall(_.numRows() == 1)
       }
-
-      def split(): ListBuffer[AggregatePartition] = {
-        withResource(new NvtxWithMetrics("agg repartition", NvtxColor.CYAN, repartitionTime)) { _ =>
-          if (seed >= hashSeed + 100) {
-            throw new IllegalStateException("repartitioned too many times, please " +
-              "consider disabling repartition-based fallback for aggregation")
-          }
-          val totalSize = batches.map(_.sizeInBytes).sum
-          val newSeed = seed + 7
-          val iter = cbIteratorStealingFromBuffer(batches)
-          withResource(new GpuBatchSubPartitioner(
-            iter, hashKeys, computeNumPartitions(totalSize), newSeed, "aggRepartition")) {
-            partitioner =>
-              closeOnExcept(ListBuffer.empty[AggregatePartition]) { partitions =>
-                preparePartitions(newSeed, partitioner, partitions)
-                partitions
-              }
-          }
-        }
-      }
-
-      private def preparePartitions(
-          newSeed: Int,
-          partitioner: GpuBatchSubPartitioner,
-          partitions: ListBuffer[AggregatePartition]): Unit = {
-        (0 until partitioner.partitionsCount).foreach { id =>
-          val buffer = ListBuffer.empty[SpillableColumnarBatch]
-          buffer ++= partitioner.releaseBatchesByPartition(id)
-          val newPart = AggregatePartition.apply(buffer, newSeed)
-          if (newPart.totalRows() > 0) {
-            partitions += newPart
-          } else {
-            newPart.safeClose()
-          }
-        }
-      }
-
-      private[this] def computeNumPartitions(totalSize: Long): Int = {
-        Math.floorDiv(totalSize, targetMergeBatchSize).toInt + 1
-      }
     }
 
-    private val hashSeed = 100
     private val aggPartitions = ListBuffer.empty[AggregatePartition]
-    private val deferredAggPartitions = ListBuffer.empty[AggregatePartition]
-    deferredAggPartitions += AggregatePartition.apply(inputBatches, hashSeed)
 
-    override def hasNext: Boolean = aggPartitions.nonEmpty || deferredAggPartitions.nonEmpty
+    batchesByBucket.foreach(batches => {
+      if (batches.size() != 0) {
+        aggPartitions += AggregatePartition(batches)
+      }
+    })
+
+    override def hasNext: Boolean = aggPartitions.nonEmpty
 
     override def next(): ColumnarBatch = {
       withResource(new NvtxWithMetrics("RepartitionAggregateIterator.next",
         NvtxColor.BLUE, opTime)) { _ =>
-        if (aggPartitions.isEmpty && deferredAggPartitions.nonEmpty) {
-          val headDeferredPartition = deferredAggPartitions.remove(0)
-          withResource(headDeferredPartition) { _ =>
-            aggPartitions ++= headDeferredPartition.split()
-          }
-          return next()
-        }
 
         val headPartition = aggPartitions.remove(0)
-        if (!headPartition.areAllBatchesSingleRow &&
-          headPartition.totalSize() > targetMergeBatchSize) {
-          deferredAggPartitions += headPartition
-          return next()
-        }
 
         withResource(headPartition) { _ =>
-          val batchSizeBeforeMerge = headPartition.batches.size
+          val batchSizeBeforeMerge = headPartition.batches.size()
           AggregateUtils.tryMergeAggregatedBatches(
-            headPartition.batches, isReductionOnly || headPartition.areAllBatchesSingleRow, metrics,
+            headPartition.batches.data,
+            headPartition.areAllBatchesSingleRow, metrics,
             targetMergeBatchSize, concatAndMergeHelper)
           if (headPartition.batches.size != 1) {
             throw new IllegalStateException(
               "Expected a single batch after tryMergeAggregatedBatches, but got " +
-                  s"${headPartition.batches.size} batches. Before merge, there were " +
-                  s"$batchSizeBeforeMerge batches.")
+                s"${headPartition.batches.size()} batches. Before merge, there were " +
+                s"$batchSizeBeforeMerge batches.")
           }
-          headPartition.batches.head.getColumnarBatch()
+          withResource(headPartition.batches.removeLast()) { lastBatch =>
+            lastBatch.getColumnarBatch()
+          }
         }
       }
     }
 
     override def close(): Unit = {
       aggPartitions.foreach(_.safeClose())
-      deferredAggPartitions.foreach(_.safeClose())
     }
   }
 
 
-  /** Build an iterator that uses a sort-based approach to merge aggregated batches together. */
-  private def buildRepartitionFallbackIterator(): Iterator[ColumnarBatch] = {
-    logInfo(s"Falling back to repartition-based aggregation with " +
-      s"${aggregatedBatches.size} batches")
-    metrics.numTasksFallBacked += 1
-
-    val groupingAttributes = groupingExpressions.map(_.toAttribute)
-    val aggBufferAttributes = groupingAttributes ++
-      aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes)
-
-    val hashKeys: Seq[GpuExpression] =
-      GpuBindReferences.bindGpuReferences(groupingAttributes, aggBufferAttributes.toSeq)
-
-
-    repartitionIter = Some(RepartitionAggregateIterator(
-      aggregatedBatches,
-      hashKeys,
-      targetMergeBatchSize,
-      opTime = metrics.opTime,
-      repartitionTime = metrics.repartitionTime))
-    repartitionIter.get
+  /** Build an iterator merging aggregated batches in each bucket. */
+  private def buildBucketIterator(): Iterator[ColumnarBatch] = {
+    bucketIter = Some(RepartitionAggregateIterator(opTime = metrics.opTime))
+    bucketIter.get
   }
 
-  /** Build an iterator that uses a sort-based approach to merge aggregated batches together. */
-  private def buildSortFallbackIterator(): Iterator[ColumnarBatch] = {
-    logInfo(s"Falling back to sort-based aggregation with ${aggregatedBatches.size} batches")
-    metrics.numTasksFallBacked += 1
-    val aggregatedBatchIter = cbIteratorStealingFromBuffer(aggregatedBatches)
-
-    if (isReductionOnly) {
-      // Normally this should never happen because `tryMergeAggregatedBatches` should have done
-      // a last-ditch effort to concatenate all batches together regardless of target limits.
-      throw new IllegalStateException("Unable to fallback to sort-based aggregation " +
-          "without grouping keys")
-    }
-
-    val groupingAttributes = groupingExpressions.map(_.toAttribute)
-    val ordering = groupingAttributes.map(SortOrder(_, Ascending, NullsFirst, Seq.empty))
-    val aggBufferAttributes = groupingAttributes ++
-        aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes)
-    val sorter = new GpuSorter(ordering, aggBufferAttributes)
-    val aggBatchTypes = aggBufferAttributes.map(_.dataType)
-
-    // Use the out of core sort iterator to sort the batches by grouping key
-    outOfCoreIter = Some(GpuOutOfCoreSortIterator(
-      aggregatedBatchIter,
-      sorter,
-      configuredTargetBatchSize,
-      opTime = metrics.opTime,
-      sortTime = metrics.sortTime,
-      outputBatches = NoopMetric,
-      outputRows = NoopMetric))
-
-    // The out of core sort iterator does not guarantee that a batch contains all of the values
-    // for a particular key, so add a key batching iterator to enforce this. That allows each batch
-    // to be merge-aggregated safely since all values associated with a particular key are
-    // guaranteed to be in the same batch.
-    val keyBatchingIter = new GpuKeyBatchingIterator(
-      outOfCoreIter.get,
-      sorter,
-      aggBatchTypes.toArray,
-      configuredTargetBatchSize,
-      numInputRows = NoopMetric,
-      numInputBatches = NoopMetric,
-      numOutputRows = NoopMetric,
-      numOutputBatches = NoopMetric,
-      concatTime = metrics.concatTime,
-      opTime = metrics.opTime)
-
-    // Finally wrap the key batching iterator with a merge aggregation on the output batches.
-    new Iterator[ColumnarBatch] {
-      override def hasNext: Boolean = keyBatchingIter.hasNext
-
-      private val mergeSortedHelper =
-        new AggHelper(inputAttributes, groupingExpressions, aggregateExpressions,
-          forceMerge = true, isSorted = true, useTieredProject = useTieredProject)
-
-      override def next(): ColumnarBatch = {
-        // batches coming out of the sort need to be merged
-        val resultSpillable =
-          computeAggregateAndClose(metrics, keyBatchingIter.next(), mergeSortedHelper)
-        withResource(resultSpillable) { _ =>
-          resultSpillable.getColumnarBatch()
-        }
-      }
-    }
-  }
 
   /**
    * Generates the result of a reduction-only aggregation on empty input by emitting the
@@ -1293,13 +1315,13 @@ abstract class GpuBaseAggregateMeta[INPUT <: SparkPlan](
     )
     if (arrayWithStructsGroupings) {
       willNotWorkOnGpu("ArrayTypes with Struct children in grouping expressions are not " +
-          "supported")
+        "supported")
     }
 
     tagForReplaceMode()
 
     if (agg.aggregateExpressions.exists(expr => expr.isDistinct)
-        && agg.aggregateExpressions.exists(expr => expr.filter.isDefined)) {
+      && agg.aggregateExpressions.exists(expr => expr.filter.isDefined)) {
       // Distinct with Filter is not supported on the GPU currently,
       // This makes sure that if we end up here, the plan falls back to the CPU
       // which will do the right thing.
@@ -1371,15 +1393,15 @@ abstract class GpuBaseAggregateMeta[INPUT <: SparkPlan](
         // (due to First). Fall back to CPU in this case.
         if (AggregateUtils.shouldFallbackMultiDistinct(agg.aggregateExpressions)) {
           willNotWorkOnGpu("Aggregates of non-distinct functions with multiple distinct " +
-              "functions are non-deterministic for non-distinct functions as it is " +
-              "computed using First.")
+            "functions are non-deterministic for non-distinct functions as it is " +
+            "computed using First.")
         }
       }
     }
 
     if (!conf.partialMergeDistinctEnabled && aggPattern.contains(PartialMerge)) {
       willNotWorkOnGpu("Replacing Partial Merge aggregates disabled. " +
-          s"Set ${conf.partialMergeDistinctEnabled} to true if desired")
+        s"Set ${conf.partialMergeDistinctEnabled} to true if desired")
     }
   }
 
@@ -1510,8 +1532,7 @@ abstract class GpuBaseAggregateMeta[INPUT <: SparkPlan](
       conf.forceSinglePassPartialSortAgg,
       allowSinglePassAgg,
       allowNonFullyAggregatedOutput,
-      conf.skipAggPassReductionRatio,
-      conf.aggFallbackAlgorithm)
+      conf.skipAggPassReductionRatio)
   }
 }
 
@@ -1599,8 +1620,7 @@ abstract class GpuTypedImperativeSupportedAggregateExecMeta[INPUT <: BaseAggrega
         false,
         false,
         false,
-        1,
-        conf.aggFallbackAlgorithm)
+        1)
     } else {
       super.convertToGpu()
     }
@@ -1935,7 +1955,7 @@ object GpuHashAggregateExecBase {
 }
 
 /**
- * The GPU version of SortAggregateExec that is intended for partial aggregations that are not
+ * The GPU version of AggregateExec that is intended for partial aggregations that are not
  * reductions and so it sorts the input data ahead of time to do it in a single pass.
  *
  * @param requiredChildDistributionExpressions this is unchanged by the GPU. It is used in
@@ -1953,8 +1973,6 @@ object GpuHashAggregateExecBase {
  *                                      (can omit non fully aggregated data for non-final
  *                                      stage of aggregation)
  * @param skipAggPassReductionRatio skip if the ratio of rows after a pass is bigger than this value
- * @param aggFallbackAlgorithm use sort-based fallback or repartition-based fallback for
- *                             oversize agg
  */
 case class GpuHashAggregateExec(
     requiredChildDistributionExpressions: Option[Seq[Expression]],
@@ -1969,8 +1987,7 @@ case class GpuHashAggregateExec(
     forceSinglePassAgg: Boolean,
     allowSinglePassAgg: Boolean,
     allowNonFullyAggregatedOutput: Boolean,
-    skipAggPassReductionRatio: Double,
-    aggFallbackAlgorithm: AggFallbackAlgorithm.Value
+    skipAggPassReductionRatio: Double
 ) extends ShimUnaryExecNode with GpuExec {
 
   // lifted directly from `BaseAggregateExec.inputAttributes`, edited comment.
@@ -1987,7 +2004,7 @@ case class GpuHashAggregateExec(
   protected override val outputRowsLevel: MetricsLevel = ESSENTIAL_LEVEL
   protected override val outputBatchesLevel: MetricsLevel = MODERATE_LEVEL
   override lazy val additionalMetrics: Map[String, GpuMetric] = Map(
-    NUM_TASKS_FALL_BACKED -> createMetric(MODERATE_LEVEL, DESCRIPTION_NUM_TASKS_FALL_BACKED),
+    NUM_TASKS_REPARTITIONED -> createMetric(MODERATE_LEVEL, DESCRIPTION_NUM_TASKS_REPARTITIONED),
     OP_TIME -> createNanoTimingMetric(MODERATE_LEVEL, DESCRIPTION_OP_TIME),
     AGG_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_AGG_TIME),
     CONCAT_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_CONCAT_TIME),
@@ -2019,7 +2036,7 @@ case class GpuHashAggregateExec(
     val aggMetrics = GpuHashAggregateMetrics(
       numOutputRows = gpuLongMetric(NUM_OUTPUT_ROWS),
       numOutputBatches = gpuLongMetric(NUM_OUTPUT_BATCHES),
-      numTasksFallBacked = gpuLongMetric(NUM_TASKS_FALL_BACKED),
+      numTasksRepartitioned = gpuLongMetric(NUM_TASKS_REPARTITIONED),
       opTime = gpuLongMetric(OP_TIME),
       computeAggTime = gpuLongMetric(AGG_TIME),
       concatTime = gpuLongMetric(CONCAT_TIME),
@@ -2055,12 +2072,11 @@ case class GpuHashAggregateExec(
       val postBoundReferences = GpuAggFinalPassIterator.setupReferences(groupingExprs,
         aggregateExprs, aggregateAttrs, resultExprs, modeInfo)
 
-      new DynamicGpuPartialSortAggregateIterator(cbIter, inputAttrs, groupingExprs,
+      new DynamicGpuPartialAggregateIterator(cbIter, inputAttrs, groupingExprs,
         boundGroupExprs, aggregateExprs, aggregateAttrs, resultExprs, modeInfo,
         localEstimatedPreProcessGrowth, alreadySorted, expectedOrdering,
         postBoundReferences, targetBatchSize, aggMetrics, useTieredProject,
-        localForcePre, localAllowPre, allowNonFullyAggregatedOutput, skipAggPassReductionRatio,
-        aggFallbackAlgorithm)
+        localForcePre, localAllowPre, allowNonFullyAggregatedOutput, skipAggPassReductionRatio)
     }
   }
 
@@ -2103,8 +2119,8 @@ case class GpuHashAggregateExec(
   // Used in de-duping and optimizer rules
   override def producedAttributes: AttributeSet =
     AttributeSet(aggregateAttributes) ++
-        AttributeSet(resultExpressions.diff(groupingExpressions).map(_.toAttribute)) ++
-        AttributeSet(aggregateBufferAttributes)
+      AttributeSet(resultExpressions.diff(groupingExpressions).map(_.toAttribute)) ++
+      AttributeSet(aggregateBufferAttributes)
 
   // AllTuples = distribution with a single partition and all tuples of the dataset are co-located.
   // Clustered = dataset with tuples co-located in the same partition if they share a specific value
@@ -2161,7 +2177,7 @@ case class GpuHashAggregateExec(
   }
 }
 
-class DynamicGpuPartialSortAggregateIterator(
+class DynamicGpuPartialAggregateIterator(
     cbIter: Iterator[ColumnarBatch],
     inputAttrs: Seq[Attribute],
     groupingExprs: Seq[NamedExpression],
@@ -2180,8 +2196,7 @@ class DynamicGpuPartialSortAggregateIterator(
     forceSinglePassAgg: Boolean,
     allowSinglePassAgg: Boolean,
     allowNonFullyAggregatedOutput: Boolean,
-    skipAggPassReductionRatio: Double,
-    aggFallbackAlgorithm: AggFallbackAlgorithm.Value
+    skipAggPassReductionRatio: Double
 ) extends Iterator[ColumnarBatch] {
   private var aggIter: Option[Iterator[ColumnarBatch]] = None
   private[this] val isReductionOnly = boundGroupExprs.outputTypes.isEmpty
@@ -2282,7 +2297,6 @@ class DynamicGpuPartialSortAggregateIterator(
       useTiered,
       allowNonFullyAggregatedOutput,
       skipAggPassReductionRatio,
-      aggFallbackAlgorithm,
       localInputRowsMetrics)
 
     GpuAggFinalPassIterator.makeIter(mergeIter, postBoundReferences, metrics)
