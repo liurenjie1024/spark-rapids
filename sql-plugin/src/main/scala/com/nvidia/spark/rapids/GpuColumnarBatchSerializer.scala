@@ -33,8 +33,8 @@ import org.apache.spark.serializer.{DeserializationStream, SerializationStream, 
 import org.apache.spark.sql.types.{DataType, NullType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector => SparkColumnVector}
 
-class SerializedBatchIterator(dIn: DataInputStream, deserTime: GpuMetric
-) extends Iterator[(Int, ColumnarBatch)] {
+class SerializedBatchIterator(dIn: DataInputStream, deserTime: GpuMetric) extends
+  Iterator[(Int, ColumnarBatch)] {
   private[this] var nextHeader: Option[SerializedTableHeader] = None
   private[this] var toBeReturned: Option[ColumnarBatch] = None
   private[this] var streamClosed: Boolean = false
@@ -199,16 +199,18 @@ class GpuColumnarBatchSerializer(dataSize: GpuMetric,
     deserTime: GpuMetric = NoopMetric,
     isSerializedTable: Boolean = false,
     sparkTypes: Array[DataType] = Array.empty,
-    bundleSize: Long = 0L) extends Serializer with Serializable {
+    bundleSize: Long = 0L,
+    useKudo: Boolean = false
+) extends Serializer with Serializable {
   override def newInstance(): SerializerInstance =
     new GpuColumnarBatchSerializerInstance(dataSize, serTime, deserTime,
-      isSerializedTable, sparkTypes, bundleSize)
+      isSerializedTable, sparkTypes, bundleSize, useKudo)
   override def supportsRelocationOfSerializedObjects: Boolean = true
 }
 
 private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, serTime: GpuMetric,
     deserTime: GpuMetric, isSerializedTable: Boolean, sparkTypes: Array[DataType],
-    bundleSize: Long) extends SerializerInstance {
+    bundleSize: Long, useKudo: Boolean) extends SerializerInstance {
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
     private[this] val dOut = new DataOutputStream(new BufferedOutputStream(out))
@@ -274,14 +276,29 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, serTime: G
             }
             (0 until numCols).map(i => toHostCol(batch.column(i))).toArray
           }
-          dataSize += JCudfSerialization.getSerializedSizeInBytes(cols, startRow, numRows)
-          withResource(new NvtxRange("Serialize Batch", NvtxColor.YELLOW)) { _ =>
-            JCudfSerialization.writeToStream(cols, dOut, startRow, numRows)
+          if (useKudo) {
+            withResource(new NvtxRange("Serialize Batch", NvtxColor.YELLOW)) { _ =>
+              val kudo = new KudoSerializer()
+              dataSize += kudo.writeToStream(cols, dOut, startRow, numRows)
+            }
+          } else {
+            dataSize += JCudfSerialization.getSerializedSizeInBytes(cols, startRow, numRows)
+            val range = new NvtxRange("Serialize Batch", NvtxColor.YELLOW)
+            try {
+              JCudfSerialization.writeToStream(cols, dOut, startRow, numRows)
+            } finally {
+              range.close()
+            }
           }
         }
       } else { // Rows only batch
         withResource(new NvtxRange("Serialize Row Only Batch", NvtxColor.YELLOW)) { _ =>
-          JCudfSerialization.writeRowsToStream(dOut, numRows)
+          if (useKudo) {
+            val kudo = new KudoSerializer()
+            kudo.writeRowsToStream(dOut, numRows)
+          } else {
+            JCudfSerialization.writeRowsToStream(dOut, numRows)
+          }
         }
       }
     }
