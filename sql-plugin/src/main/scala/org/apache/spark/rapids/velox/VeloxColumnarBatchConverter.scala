@@ -44,6 +44,12 @@ class CoalesceNativeConverter(veloxIter: Iterator[ColumnarBatch],
   private val c2cMetrics = Map(
     "OutputSizeInBytes" -> GpuMetric.unwrap(metrics("OutputSizeInBytes")))
 
+  @transient private var runtime: GlutenJniWrapper = _
+
+  def setRuntime(): Unit = {
+    runtime = GlutenJniWrapper.create()
+  }
+
   override def hasNext(): Boolean = {
     // either converter holds data or upstreaming iterator holds data
     val ret = withResource(new NvtxWithMetrics("VeloxC2CHasNext", NvtxColor.WHITE,
@@ -99,8 +105,9 @@ class CoalesceNativeConverter(veloxIter: Iterator[ColumnarBatch],
           }
         }
         if (converterImpl.isEmpty) {
+          require(runtime != null, "Please setRuntime before fetching the iterator")
           val converter = VeloxBatchConverter(
-            GlutenJniWrapper.create(),
+            runtime,
             veloxIter.next(),
             targetBatchSizeInBytes, schema, c2cMetrics
           )
@@ -119,21 +126,18 @@ object VeloxColumnarBatchConverter extends Logging {
 
   def hostToDevice(hostIter: Iterator[Array[HostColumnVector]],
                    outputAttr: Seq[Attribute],
-                   metrics: Map[String, GpuMetric],
-                   acquireGpuSemaphore: Boolean): Iterator[ColumnarBatch] = {
+                   metrics: Map[String, GpuMetric]): Iterator[ColumnarBatch] = {
     val dataTypes = outputAttr.map(_.dataType).toArray
 
     hostIter.map { hostVectors =>
-      if (acquireGpuSemaphore) {
-        Option(TaskContext.get()).foreach { ctx =>
-          GpuSemaphore.tryAcquire(ctx) match {
-            case AcquireFailed(_) =>
-              withResource(new NvtxWithMetrics("gpuAcquireC2C", NvtxColor.GREEN,
-                metrics("GpuAcquireTime"))) { _ =>
-                GpuSemaphore.acquireIfNecessary(ctx)
-              }
-            case _ =>
-          }
+      Option(TaskContext.get()).foreach { ctx =>
+        GpuSemaphore.tryAcquire(ctx) match {
+          case AcquireFailed(_) =>
+            withResource(new NvtxWithMetrics("gpuAcquireC2C", NvtxColor.GREEN,
+              metrics("GpuAcquireTime"))) { _ =>
+              GpuSemaphore.acquireIfNecessary(ctx)
+            }
+          case _ =>
         }
       }
       withResource(new NvtxWithMetrics("HostToDeviceC2C", NvtxColor.BLUE,

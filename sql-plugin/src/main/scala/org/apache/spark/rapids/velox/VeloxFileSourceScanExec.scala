@@ -83,10 +83,11 @@ case class VeloxFileSourceScanExec(
   }
 
   lazy val inputRDD: RDD[InternalRow] = {
-    logInfo(s"Using Velox to read parquet: ${metadata.toString()}")
-
     // invoke a whole stage transformer
     val glutenPipeline = WholeStageTransformer(glutenScan, materializeInput = false)(1)
+    logInfo(s"Using Velox to read parquet: ${metadata.toString()}")
+    logInfo(s"SubstraitPlan: ${glutenPipeline.substraitPlanJson}")
+    logInfo(s"NativePlan for VeloxParquetScan: ${glutenPipeline.nativePlanString(true)}")
 
     val glutenScanRDD = glutenPipeline.doExecuteColumnar()
 

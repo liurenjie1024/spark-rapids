@@ -16,13 +16,15 @@
 
 package org.apache.spark.rapids.velox
 
-import scala.collection.mutable
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.ReentrantLock
 
 import io.glutenproject.execution._
 import io.substrait.proto.Plan
 
 import ai.rapids.cudf.{HostColumnVector, NvtxColor}
-import com.nvidia.spark.rapids.{CoalesceSizeGoal, GpuMetric, GpuSemaphore, NvtxWithMetrics, SemaphoreAcquired}
+import com.nvidia.spark.rapids.{CoalesceSizeGoal, GpuMetric, NvtxWithMetrics}
 import com.nvidia.spark.rapids.Arm.withResource
 
 import org.apache.spark.{InterruptibleIterator, Partition, TaskContext}
@@ -32,6 +34,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.rapids.execution.TrampolineUtil
 import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -102,24 +105,21 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
       val coalesceConverter = new CoalesceNativeConverter(
         veloxIter, coalesceGoal.targetSizeBytes.toInt, schema, metrics
       )
-
-      if (preloadedCapacity > 0) {
-        val preloadIter = PreloadedIterator(coalesceConverter,
+      val hostIter: Iterator[Array[HostColumnVector]] = if (preloadedCapacity > 0) {
+        val producerInitFn = () => {
+          coalesceConverter.setRuntime()
+        }
+        PreloadedIterator(context.taskAttemptId(),
+          coalesceConverter,
+          producerInitFn,
           preloadedCapacity,
-          metrics("preloadWaitTime"), metrics("GpuAcquireTime")
-        )
-        VeloxColumnarBatchConverter.hostToDevice(preloadIter,
-          outputAttr,
-          metrics,
-          acquireGpuSemaphore = false
-        )
+          metrics("preloadWaitTime"))
       } else {
-        VeloxColumnarBatchConverter.hostToDevice(coalesceConverter,
-          outputAttr,
-          metrics,
-          acquireGpuSemaphore = true
-        )
+        coalesceConverter.setRuntime()
+        coalesceConverter
       }
+
+      VeloxColumnarBatchConverter.hostToDevice(hostIter, outputAttr, metrics)
     }
 
     // TODO: SPARK-25083 remove the type erasure hack in data source scan
@@ -150,75 +150,110 @@ private class VeloxScanMetricsIter(iter: Iterator[ColumnarBatch],
   }
 }
 
-private case class PreloadedIterator(iterImpl: Iterator[Array[HostColumnVector]],
+private case class PreloadedIterator(taskAttId: Long,
+                                     iterImpl: Iterator[Array[HostColumnVector]],
+                                     producerInitFn: () => Unit,
                                      preloadedCapacity: Int,
-                                     waitCpuTime: GpuMetric,
-                                     waitGpuTime: GpuMetric
+                                     waitTimeMetric: GpuMetric
                                     ) extends Iterator[Array[HostColumnVector]] with Logging {
 
-  private var producedNum: Int = 0
   private var consumedNum: Int = 0
-  private var gpuOccupied: Boolean = false
-  private var hasWorkingBuffer: Boolean = false
+  private var producedNum: Int = 0
 
-  @transient private lazy val taskId = TaskContext.get().taskAttemptId()
+  /**
+   * Status code of the async Producer:
+   * 0: uninitialized
+   * 1: running
+   * 2: finished
+   */
+  @transient private lazy val producerStatus = new AtomicInteger(0)
 
-  @transient private lazy val preloadedBatches = mutable.Queue.empty[Array[HostColumnVector]]
+  // This lock guarantees anytime if ProducerStatus == running there must be a working batch
+  // being produced or waiting to be put into the queue.
+  @transient private lazy val lock = new ReentrantLock()
 
-  private def progressLog(produced: Boolean, consumed: Boolean): Unit = {
-    if (produced) {
-      producedNum += 1
+  private var producer: Thread = _
+
+  @transient private lazy val preloadedBatches = {
+    new LinkedBlockingQueue[Either[Throwable, Array[HostColumnVector]]](preloadedCapacity)
+  }
+
+  @transient private lazy val produceFn: Runnable = new Runnable {
+
+    // This context will be got in the main Thread during the initialization of `produceFn`
+    private val taskContext: TaskContext = TaskContext.get()
+
+    override def run(): Unit = {
+      TrampolineUtil.setTaskContext(taskContext)
+      try {
+        var firstTime = true
+
+        do {
+          if (firstTime) {
+            firstTime = false
+          } else {
+            lock.unlock()
+          }
+          val nextBatch = iterImpl.next()
+          lock.lock()
+          producedNum += 1
+          logInfo(s"[$taskAttId] PreloadedIterator produced $producedNum batches, currently " +
+            s"preloaded batchNum: ${preloadedBatches.size() + 1}")
+          preloadedBatches.put(Right(nextBatch))
+        }
+        while (iterImpl.hasNext)
+
+        require(producerStatus.incrementAndGet() == 2)
+        lock.unlock()
+      } catch {
+        case ex: Throwable =>
+          // transfer the exception info to the main thread as an interrupted signal
+          preloadedBatches.put(Left(ex))
+          if (lock.isHeldByCurrentThread) {
+            lock.unlock()
+          }
+          throw new RuntimeException(ex)
+      } finally {
+        TrampolineUtil.unsetTaskContext()
+      }
     }
-    if (consumed) {
-      consumedNum += 1
-    }
-    logInfo(s"[$taskId] PreloadedIterator produced $producedNum batches and" +
-      s" consumed $consumedNum batches")
   }
 
   override def hasNext: Boolean = {
-    preloadedBatches.nonEmpty || iterImpl.hasNext
-  }
-
-  private def popOne(): Array[HostColumnVector] = {
-    if (preloadedBatches.nonEmpty) {
-      progressLog(produced = false, consumed = true)
-      return preloadedBatches.dequeue()
+    if (producerStatus.get() == 0) {
+      if (!iterImpl.hasNext) {
+        producerStatus.getAndSet(2)
+        return false
+      }
+      producerInitFn()
+      producerStatus.incrementAndGet()
+      producer = new Thread(produceFn)
+      producer.start()
     }
-    withResource(new NvtxWithMetrics("waitCpuScan", NvtxColor.RED, waitCpuTime)) { _ =>
-      hasWorkingBuffer = false
-      progressLog(produced = true, consumed = true)
-      iterImpl.next()
+
+    !preloadedBatches.isEmpty || {
+      lock.lock()
+      val ret = producerStatus.get() == 1
+      lock.unlock()
+      ret
     }
   }
 
   override def next(): Array[HostColumnVector] = {
-    hasWorkingBuffer = true
-
-    if (gpuOccupied) {
-      return popOne()
-    }
-
-    while (preloadedBatches.size < preloadedCapacity && (hasWorkingBuffer || iterImpl.hasNext)) {
-      if (preloadedBatches.nonEmpty) {
-        GpuSemaphore.tryAcquire(TaskContext.get()) match {
-          case SemaphoreAcquired => gpuOccupied = true
-          case _ =>
-        }
+    var ret = preloadedBatches.poll()
+    if (ret == null) {
+      withResource(new NvtxWithMetrics("waitForCPU", NvtxColor.RED, waitTimeMetric)) { _ =>
+        ret = preloadedBatches.take()
       }
-      if (gpuOccupied) {
-        return popOne()
-      }
-      hasWorkingBuffer = false
-      progressLog(produced = true, consumed = false)
-      preloadedBatches.enqueue(iterImpl.next())
     }
-
-    withResource(new NvtxWithMetrics("gpuAcquireC2C", NvtxColor.GREEN, waitGpuTime)) { _ =>
-      GpuSemaphore.acquireIfNecessary(TaskContext.get())
-      gpuOccupied = true
+    ret match {
+      case Left(ex: Throwable) =>
+        logError(s"[$taskAttId] PreloadedIterator: AsyncProducer failed with exceptions")
+        throw new RuntimeException(s"[$taskAttId] PreloadedIterator", ex)
+      case Right(ret: Array[HostColumnVector]) =>
+        consumedNum += 1
+        logInfo(s"[$taskAttId] PreloadedIterator consumed $consumedNum batches")
+        ret
     }
-    progressLog(produced = false, consumed = true)
-    preloadedBatches.dequeue()
   }
 }
