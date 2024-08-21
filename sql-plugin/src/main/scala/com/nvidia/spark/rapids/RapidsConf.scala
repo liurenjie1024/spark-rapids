@@ -15,15 +15,18 @@
  */
 package com.nvidia.spark.rapids
 
-import java.io.{File, FileOutputStream}
+import java.io.{BufferedOutputStream, DataOutputStream, File, FileOutputStream}
+import java.nio.charset.StandardCharsets
 import java.util
-
-import scala.collection.JavaConverters._
-import scala.collection.mutable.{HashMap, ListBuffer}
+import java.util.Locale
 
 import ai.rapids.cudf.Cuda
 import com.nvidia.spark.rapids.jni.RmmSpark.OomInjectionType
 import com.nvidia.spark.rapids.lore.{LoreId, OutputLoreId}
+import org.json4s.DefaultFormats
+import org.json4s.jackson.Serialization.writePretty
+import scala.collection.JavaConverters._
+import scala.collection.mutable.{HashMap, ListBuffer}
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
@@ -124,6 +127,7 @@ abstract class ConfEntry[T](val key: String, val converter: String => T, val doc
 
   def get(conf: Map[String, String]): T
   def get(conf: SQLConf): T
+  def getDefault(): T
   def help(asTable: Boolean = false): Unit
 
   override def toString: String = key
@@ -145,6 +149,10 @@ class ConfEntryWithDefault[T](key: String, converter: String => T, doc: String,
     } else {
       converter(tmp)
     }
+  }
+
+  override def getDefault(): T = {
+    defaultValue
   }
 
   override def help(asTable: Boolean = false): Unit = {
@@ -180,6 +188,10 @@ class OptionalConfEntry[T](key: String, val rawConverter: String => T, doc: Stri
     } else {
       Some(rawConverter(tmp))
     }
+  }
+
+  override def getDefault(): Option[T] = {
+    None
   }
 
   override def help(asTable: Boolean = false): Unit = {
@@ -995,20 +1007,25 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
       .booleanConf
       .createWithDefault(true)
 
+  val ENABLE_COMBINED_EXPR_PREFIX = "spark.rapids.sql.expression.combined."
+
+  val ENABLE_COMBINED_EXPRESSIONS = conf("spark.rapids.sql.combined.expressions.enabled")
+    .doc("For some expressions it can be much more efficient to combine multiple " +
+      "expressions together into a single kernel call. This enables or disables that " +
+      s"feature. Note that this requires that $ENABLE_TIERED_PROJECT is turned on or " +
+      "else there is no performance improvement. You can also disable this feature for " +
+      "expressions that support it. Each config is expression specific and starts with " +
+      s"$ENABLE_COMBINED_EXPR_PREFIX followed by the name of the GPU expression class " +
+      s"similar to what we do for enabling converting individual expressions to the GPU.")
+    .internal()
+    .booleanConf
+    .createWithDefault(true)
+
   val ENABLE_RLIKE_REGEX_REWRITE = conf("spark.rapids.sql.rLikeRegexRewrite.enabled")
       .doc("Enable the optimization to rewrite rlike regex to contains in some cases.")
       .internal()
       .booleanConf
       .createWithDefault(true)
-
-  val ENABLE_GETJSONOBJECT_LEGACY = conf("spark.rapids.sql.getJsonObject.legacy.enabled")
-      .doc("When set to true, the get_json_object function will use the legacy implementation " +
-          "on the GPU. The legacy implementation is faster than the current implementation, but " +
-          "it has several incompatibilities and bugs, including no input validation, escapes are " +
-          "not properly processed for Strings, and non-string output is not normalized.")
-      .internal()
-      .booleanConf
-      .createWithDefault(false)
 
   // FILE FORMATS
   val MULTITHREAD_READ_NUM_THREADS = conf("spark.rapids.sql.multiThreadedRead.numThreads")
@@ -2090,9 +2107,9 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     .startupOnly()
     .doc("Overrides the automatic Spark shim detection logic and forces a specific shims " +
       "provider class to be used. Set to the fully qualified shims provider class to use. " +
-      "If you are using a custom Spark version such as Spark 3.1.1.0 then this can be used to " +
-      "specify the shims provider that matches the base Spark version of Spark 3.1.1, i.e.: " +
-      "com.nvidia.spark.rapids.shims.spark311.SparkShimServiceProvider. If you modified Spark " +
+      "If you are using a custom Spark version such as Spark 3.2.0 then this can be used to " +
+      "specify the shims provider that matches the base Spark version of Spark 3.2.0, i.e.: " +
+      "com.nvidia.spark.rapids.shims.spark320.SparkShimServiceProvider. If you modified Spark " +
       "then there is no guarantee the RAPIDS Accelerator will function properly." +
       "When tested in a combined jar with other Shims, it's expected that the provided " +
       "implementation follows the same convention as existing Spark shims. If its class" +
@@ -2385,11 +2402,11 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
   val ENABLE_DELTA_LOW_SHUFFLE_MERGE =
     conf("spark.rapids.sql.delta.lowShuffleMerge.enabled")
     .doc("Option to turn on the low shuffle merge for Delta Lake. Currently there are some " +
-      "limitations for this feature: \n" +
-      "1. We only support Databricks Runtime 13.3 and Deltalake 2.4. \n" +
-      s"2. The file scan mode must be set to ${RapidsReaderType.PERFILE} \n" +
+      "limitations for this feature: " +
+      "1. We only support Databricks Runtime 13.3 and Deltalake 2.4. " +
+      s"2. The file scan mode must be set to ${RapidsReaderType.PERFILE} " +
       "3. The deletion vector size must be smaller than " +
-      s"${DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_THRESHOLD.key} \n")
+      s"${DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_THRESHOLD.key} ")
     .booleanConf
     .createWithDefault(false)
 
@@ -2448,6 +2465,17 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     println("-----|-----------------|-------------|---------------|------")
   }
 
+  /**
+   * Returns all spark-rapids configs with their default values.
+   * This function is used to dump default configs, so that they
+   * could be used by the integration test.
+   */
+  def getAllConfigsWithDefault: Map[String, Any] = {
+    val allConfs = registeredConfs.clone()
+    allConfs.append(RapidsPrivateUtil.getPrivateConfigs(): _*)
+    allConfs.map(e => e.key -> e.getDefault).toMap
+  }
+
   def help(asTable: Boolean = false): Unit = {
     helpCommon(asTable)
     helpAdvanced(asTable)
@@ -2468,7 +2496,7 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
         |On startup use: `--conf [conf key]=[conf value]`. For example:
         |
         |```
-        |${SPARK_HOME}/bin/spark-shell --jars rapids-4-spark_2.12-24.08.0-SNAPSHOT-cuda11.jar \
+        |${SPARK_HOME}/bin/spark-shell --jars rapids-4-spark_2.12-24.10.0-SNAPSHOT-cuda11.jar \
         |--conf spark.plugins=com.nvidia.spark.SQLPlugin \
         |--conf spark.rapids.sql.concurrentGpuTasks=2
         |```
@@ -2594,6 +2622,49 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     Console.withOut(advanced) {
       Console.withErr(advanced) {
         RapidsConf.helpAdvanced(true)
+      }
+    }
+  }
+
+  object Format extends Enumeration {
+    type Format = Value
+    val PLAIN, JSON = Value
+  }
+
+  def dumpConfigsWithDefault(formatName: String, outputPath: String): Unit = {
+    import com.nvidia.spark.rapids.Arm._
+
+    val format = Format.withName(formatName.toUpperCase(Locale.US))
+
+    println(s"Dumping all spark-rapids configs and their defaults at ${outputPath}")
+
+    val allConfs = getAllConfigsWithDefault
+    withResource(new FileOutputStream(outputPath)) { fos =>
+      withResource(new BufferedOutputStream(fos)) { bos =>
+        format match {
+          case Format.PLAIN =>
+            withResource(new DataOutputStream(bos)) { dos =>
+              allConfs.foreach( { case (k, v) =>
+                val valStr = v match {
+                  case Some(optVal) => optVal.toString
+                  case None => ""
+                  case _ =>
+                    if (v == null) {
+                      ""
+                    } else {
+                      v.toString
+                    }
+                }
+                dos.writeUTF(s"'${k}': '${valStr}',")
+              })
+            }
+          case Format.JSON =>
+            implicit val formats: DefaultFormats.type = DefaultFormats
+            bos.write(writePretty(allConfs)
+              .getBytes(StandardCharsets.UTF_8))
+          case _ =>
+            System.err.println(s"Unknown format: ${format}")
+        }
       }
     }
   }
@@ -2901,10 +2972,10 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
 
   lazy val isTieredProjectEnabled: Boolean = get(ENABLE_TIERED_PROJECT)
 
+  lazy val isCombinedExpressionsEnabled: Boolean = get(ENABLE_COMBINED_EXPRESSIONS)
+
   lazy val isRlikeRegexRewriteEnabled: Boolean = get(ENABLE_RLIKE_REGEX_REWRITE)
-
-  lazy val isLegacyGetJsonObjectEnabled: Boolean = get(ENABLE_GETJSONOBJECT_LEGACY)
-
+  
   lazy val isExpandPreprojectEnabled: Boolean = get(ENABLE_EXPAND_PREPROJECT)
 
   lazy val isCoalesceAfterExpandEnabled: Boolean = get(ENABLE_COALESCE_AFTER_EXPAND)

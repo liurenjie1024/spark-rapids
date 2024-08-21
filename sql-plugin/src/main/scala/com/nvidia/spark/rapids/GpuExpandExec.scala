@@ -54,7 +54,6 @@ class GpuExpandExecMeta(
   override def convertToGpu(): GpuExec = {
     val projections = gpuProjections.map(_.map(_.convertToGpu()))
     GpuExpandExec(projections, expand.output, childPlans.head.convertIfNeeded())(
-      useTieredProject = conf.isTieredProjectEnabled,
       preprojectEnabled = conf.isExpandPreprojectEnabled,
       cacheNullMaxCount = conf.expandCachingNullVecMaxCount,
       coalesceAfter = conf.isCoalesceAfterExpandEnabled)
@@ -74,14 +73,12 @@ case class GpuExpandExec(
     projections: Seq[Seq[Expression]],
     output: Seq[Attribute],
     child: SparkPlan)(
-    useTieredProject: Boolean = false,
     preprojectEnabled: Boolean = false,
     cacheNullMaxCount: Int = 0,
     override val coalesceAfter: Boolean = true
 ) extends ShimUnaryExecNode with GpuExec {
 
   override def otherCopyArgs: Seq[AnyRef] = Seq[AnyRef](
-    useTieredProject.asInstanceOf[java.lang.Boolean],
     preprojectEnabled.asInstanceOf[java.lang.Boolean],
     cacheNullMaxCount.asInstanceOf[java.lang.Integer],
     coalesceAfter.asInstanceOf[java.lang.Boolean]
@@ -111,10 +108,10 @@ case class GpuExpandExec(
     var projectionsForBind = projections
     var attributesForBind = child.output
     var preprojectIter = identity[Iterator[ColumnarBatch]] _
-    if (useTieredProject && preprojectEnabled) {
+    if (preprojectEnabled) {
       // Tiered projection is enabled, check if pre-projection is needed.
       val boundPreprojections = GpuBindReferences.bindGpuReferencesTiered(
-        preprojectionList, child.output, useTieredProject)
+        preprojectionList, child.output, conf)
       if (boundPreprojections.exprTiers.size > 1) {
         logDebug("GPU expanding with pre-projection.")
         // We got some nested expressions, so pre-projection is good to enable.
@@ -132,7 +129,7 @@ case class GpuExpandExec(
     }
 
     val boundProjections = projectionsForBind.map { pl =>
-      GpuBindReferences.bindGpuReferencesTiered(pl, attributesForBind, useTieredProject)
+      GpuBindReferences.bindGpuReferencesTiered(pl, attributesForBind, conf)
     }
 
     child.executeColumnar().mapPartitions { it =>
@@ -260,3 +257,4 @@ class GpuExpandIterator(
     projectedBatch
   }
 }
+

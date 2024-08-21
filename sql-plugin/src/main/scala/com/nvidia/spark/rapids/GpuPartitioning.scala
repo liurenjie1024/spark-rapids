@@ -227,10 +227,11 @@ trait GpuPartitioning extends Partitioning {
 
     val hostPartColumns = withResource(partitionColumns) { _ =>
       withRetryNoSplit {
-        partitionColumns.safeMap(_.copyToHost())
+        partitionColumns.safeMap(_.copyToHostAsync(Cuda.DEFAULT_STREAM))
       }
     }
-    try {
+    withResource(hostPartColumns) { _ =>
+      Cuda.DEFAULT_STREAM.sync()
       // Leaving the GPU for a while
       GpuSemaphore.releaseIfNecessary(TaskContext.get())
 
@@ -267,8 +268,6 @@ trait GpuPartitioning extends Partitioning {
       } else {
         tmp
       }
-    } finally {
-      hostPartColumns.safeClose()
     }
   }
 

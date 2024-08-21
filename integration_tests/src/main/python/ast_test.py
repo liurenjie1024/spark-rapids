@@ -1,4 +1,4 @@
-# Copyright (c) 2021-2023, NVIDIA CORPORATION.
+# Copyright (c) 2021-2024, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ import pytest
 
 from asserts import assert_cpu_and_gpu_are_equal_collect_with_capture
 from data_gen import *
-from marks import approximate_float, datagen_overrides, ignore_order
+from marks import approximate_float, datagen_overrides, ignore_order, disable_ansi_mode
 from spark_session import with_cpu_session, is_before_spark_330
 import pyspark.sql.functions as f
 
@@ -110,10 +110,12 @@ def test_unary_positive_for_daytime_interval():
     assert_unary_ast(data_descr, lambda df: df.selectExpr('+a'))
 
 @pytest.mark.parametrize('data_descr', ast_arithmetic_descrs, ids=idfn)
+@disable_ansi_mode
 def test_unary_minus(data_descr):
     assert_unary_ast(data_descr, lambda df: df.selectExpr('-a'))
 
 @pytest.mark.parametrize('data_descr', ast_arithmetic_descrs, ids=idfn)
+@disable_ansi_mode
 def test_abs(data_descr):
     assert_unary_ast(data_descr, lambda df: df.selectExpr('abs(a)'))
 
@@ -189,12 +191,14 @@ def test_atan(data_descr):
 @approximate_float
 @pytest.mark.parametrize('data_descr', [(double_gen, False)], ids=idfn)
 def test_asinh(data_descr):
-    assert_unary_ast(data_descr, lambda df: df.selectExpr('asinh(a)'))
+    assert_unary_ast(data_descr, lambda df: df.selectExpr('asinh(a)'),
+                     conf={'spark.rapids.sql.improvedFloatOps.enabled': 'false'})
 
 @approximate_float
 @pytest.mark.parametrize('data_descr', ast_double_descr, ids=idfn)
 def test_acosh(data_descr):
-    assert_unary_ast(data_descr, lambda df: df.selectExpr('acosh(a)'))
+    assert_unary_ast(data_descr, lambda df: df.selectExpr('acosh(a)'),
+                     conf={'spark.rapids.sql.improvedFloatOps.enabled': 'false'})
 
 @approximate_float
 @pytest.mark.parametrize('data_descr', ast_double_descr, ids=idfn)
@@ -209,7 +213,7 @@ def test_atanh(data_descr):
 @pytest.mark.parametrize('data_descr', [(DoubleGen(min_exp=-20, max_exp=20), True)], ids=idfn)
 def test_asinh_improved(data_descr):
     assert_unary_ast(data_descr, lambda df: df.selectExpr('asinh(a)'),
-        conf={'spark.rapids.sql.improvedFloatOps.enabled': 'true'})
+                     conf={'spark.rapids.sql.improvedFloatOps.enabled': 'true'})
 
 # The default approximate is 1e-6 or 1 in a million
 # in some cases we need to adjust this because the algorithm is different
@@ -313,6 +317,7 @@ def test_bitwise_xor(data_descr):
             f.col('a').bitwiseXOR(f.col('b'))))
 
 @pytest.mark.parametrize('data_descr', ast_arithmetic_descrs, ids=idfn)
+@disable_ansi_mode
 def test_addition(data_descr):
     data_type = data_descr[0].data_type
     assert_binary_ast(data_descr,
@@ -322,6 +327,7 @@ def test_addition(data_descr):
             f.col('a') + f.col('b')))
 
 @pytest.mark.parametrize('data_descr', ast_arithmetic_descrs, ids=idfn)
+@disable_ansi_mode
 def test_subtraction(data_descr):
     data_type = data_descr[0].data_type
     assert_binary_ast(data_descr,
@@ -331,6 +337,7 @@ def test_subtraction(data_descr):
             f.col('a') - f.col('b')))
 
 @pytest.mark.parametrize('data_descr', ast_arithmetic_descrs, ids=idfn)
+@disable_ansi_mode
 def test_multiplication(data_descr):
     data_type = data_descr[0].data_type
     assert_binary_ast(data_descr,
@@ -373,6 +380,7 @@ def test_or(data_gen):
                        f.col('a') | f.col('b')))
 
 @ignore_order
+@disable_ansi_mode
 def test_multi_tier_ast():
     assert_gpu_ast(
         is_supported=True,
