@@ -541,6 +541,7 @@ class StructGen(DataGen):
     def contains_ts(self):
         return any(child[1].contains_ts() for child in self.children)
 
+
 class DateGen(DataGen):
     """Generate Dates in a given range"""
     def __init__(self, start=None, end=None, nullable=True):
