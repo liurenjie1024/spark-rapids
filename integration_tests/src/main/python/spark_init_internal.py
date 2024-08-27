@@ -122,6 +122,8 @@ def pytest_sessionstart(session):
     _sb = pyspark.sql.SparkSession.builder
     _sb.config('spark.plugins', 'com.nvidia.spark.SQLPlugin') \
             .config("spark.sql.adaptive.enabled", "false") \
+            .config("spark.rapids.cudfVersionOverride", "true") \
+            .config("spark.kryo.registrator", "com.nvidia.spark.rapids.GpuKryoRegistrator") \
             .config('spark.sql.queryExecutionListeners', 'org.apache.spark.sql.rapids.ExecutionPlanCaptureCallback')
 
     for key, value in os.environ.items():

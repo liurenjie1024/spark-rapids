@@ -41,6 +41,7 @@ _orig_conf_keys = _orig_conf.keys()
 # Many of these are redundant with default settings for the configs but are set here explicitly
 # to ensure any cluster settings do not interfere with tests that assume the defaults.
 _default_conf = {
+    'spark.rapids.cudfVersionOverride': 'true',
     'spark.rapids.sql.castDecimalToFloat.enabled': 'false',
     'spark.rapids.sql.castFloatToDecimal.enabled': 'false',
     'spark.rapids.sql.castFloatToIntegralTypes.enabled': 'false',
@@ -156,7 +157,7 @@ def with_gpu_session(func, conf={}):
     """
     copy = dict(conf)
     copy['spark.rapids.sql.enabled'] = 'true'
-    if is_allowing_any_non_gpu():
+    if is_allowing_any_non_gpu() or conf.get('spark.rapids.sql.parquet.useVelox', 'false') == 'true':
         copy['spark.rapids.sql.test.enabled'] = 'false'
     else:
         copy['spark.rapids.sql.test.enabled'] = 'true'
