@@ -184,8 +184,20 @@
             </activation>
             <dependencies>
                 <dependency>
+                    <groupId>org.scala-lang</groupId>
+                    <artifactId>scala-compiler</artifactId>
+                    <version>2.12.19</version>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
                     <groupId>org.apache.spark</groupId>
                     <artifactId>spark-hive_${scala.binary.version}</artifactId>
+                    <exclusions>
+                        <exclusion>
+                            <groupId>org.scala-lang</groupId>
+                            <artifactId>scala-compiler</artifactId>
+                        </exclusion>
+                    </exclusions>
                 </dependency>
                 <dependency>
                     <groupId>org.apache.spark</groupId>

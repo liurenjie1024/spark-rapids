@@ -511,7 +511,12 @@ public class GpuColumnVector extends GpuColumnVectorBase {
    */
   public static Schema from(StructType input) {
     Schema.Builder builder = Schema.builder();
-    input.foreach(f -> builder.column(GpuColumnVector.getNonNestedRapidsType(f.dataType()), f.name()));
+    input.indices().foreach(f -> {
+      StructField field = input.apply(f);
+      builder.column(GpuColumnVector.getNonNestedRapidsType(field.dataType()),
+          field.name() + "_" + f);
+      return f;
+    });
     return builder.build();
   }
 

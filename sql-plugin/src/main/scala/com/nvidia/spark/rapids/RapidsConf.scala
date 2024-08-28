@@ -16,7 +16,6 @@
 package com.nvidia.spark.rapids
 
 import java.io.{File, FileOutputStream}
-import java.util
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.{HashMap, ListBuffer}
@@ -24,6 +23,7 @@ import scala.collection.mutable.{HashMap, ListBuffer}
 import ai.rapids.cudf.Cuda
 import com.nvidia.spark.rapids.jni.RmmSpark.OomInjectionType
 import com.nvidia.spark.rapids.lore.{LoreId, OutputLoreId}
+import java.util
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
@@ -2464,6 +2464,7 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
       .booleanConf
       .createWithDefault(true)
 
+
   private def printSectionHeader(category: String): Unit =
     println(s"\n### $category")
 
@@ -3388,3 +3389,4 @@ case class OomInjectionConf(
   withSplit: Boolean,
   oomInjectionFilter: OomInjectionType
 )
+
