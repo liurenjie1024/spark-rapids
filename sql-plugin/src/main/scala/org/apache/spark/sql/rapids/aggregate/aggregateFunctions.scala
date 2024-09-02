@@ -2033,10 +2033,13 @@ case class GpuReplaceNullmask(
   override def children: Seq[Expression] = Seq(input, mask)
 
   override def columnarEval(batch: ColumnarBatch): GpuColumnVector = {
-    val res = withResource(input.columnarEval(batch)) { inputColumn =>
-      withResource(mask.columnarEval(batch)) { maskColumn =>
-        withResource(maskColumn.getBase.isNotNull) { maskColumnNotNull =>
-          inputColumn.getBase.copyWithBooleanColumnAsValidity(maskColumnNotNull)
+    val maskColumnNullity = withResource(mask.columnarEval(batch)) { maskColumn =>
+      maskColumn.getBase.isNull
+    }
+    val res = withResource(GpuScalar.from(null, dataType)) { nullScalar =>
+      withResource(maskColumnNullity) { _ =>
+        withResource(input.columnarEval(batch)) { inputColumn =>
+          maskColumnNullity.ifElse(nullScalar, inputColumn.getBase)
         }
       }
     }
@@ -2053,19 +2056,13 @@ abstract class CudfMaxMinByAggregate(
     orderingType: DataType,
     valueType: DataType) extends CudfAggregate {
 
-  protected val sortOrder: Int => cudf.OrderByArg
-
   protected val reductionAggregation: ReductionAggregation
 
   override lazy val reductionAggregate: cudf.ColumnVector => cudf.Scalar = col => {
-    val orderCol = col.getChildColumnView(0).copyToColumnVector()
-    val tmpTable = withResource(orderCol)(_ =>new cudf.Table(orderCol, col))
-    val sorted = withResource(tmpTable) { _ =>
-      // columns in table [order, original struct]
-      tmpTable.orderBy(sortOrder(0))
-    }
-    withResource(sorted) { _ =>
-      sorted.getColumn(1).reduce(reductionAggregation)
+    if (col.getNullCount == col.getRowCount) { // all nulls
+      GpuScalar.from(null, dataType)
+    } else {
+      col.reduce(reductionAggregation)
     }
   }
 
@@ -2078,8 +2075,6 @@ class CudfMaxBy(valueType: DataType, orderingType: DataType)
   extends CudfMaxMinByAggregate(orderingType, valueType) {
 
   override val name: String = "CudfMaxBy"
-  override lazy val sortOrder: Int => cudf.OrderByArg =
-    i => cudf.OrderByArg.desc(i, true)
   override lazy val groupByAggregate: GroupByAggregation = GroupByAggregation.max()
   override lazy val reductionAggregation: ReductionAggregation = ReductionAggregation.max()
 }
@@ -2088,8 +2083,6 @@ class CudfMinBy(valueType: DataType, orderingType: DataType)
   extends CudfMaxMinByAggregate(orderingType, valueType) {
 
   override val name: String = "CudfMinBy"
-  override lazy val sortOrder: Int => cudf.OrderByArg =
-    i => cudf.OrderByArg.asc(i, false)
   override lazy val groupByAggregate: GroupByAggregation = GroupByAggregation.min()
   override lazy val reductionAggregation: ReductionAggregation = ReductionAggregation.min()
 }
@@ -2099,7 +2092,7 @@ abstract class GpuMaxMinByBase(valueExpr: Expression, orderingExpr: Expression)
 
   protected val cudfMaxMinByAggregate: CudfAggregate
 
-    private lazy val bufferOrdering: AttributeReference =
+  private lazy val bufferOrdering: AttributeReference = 
     AttributeReference("ordering", orderingExpr.dataType)()
 
   private lazy val bufferValue: AttributeReference =
@@ -2109,10 +2102,10 @@ abstract class GpuMaxMinByBase(valueExpr: Expression, orderingExpr: Expression)
   // a struct before just going into cuDF.
   private def createStructExpression(order: Expression, value: Expression): Expression = 
     GpuReplaceNullmask(
-    GpuCreateNamedStruct(Seq(
-      GpuLiteral(CudfMaxMinBy.KEY_ORDERING, StringType), order,
-      GpuLiteral(CudfMaxMinBy.KEY_VALUE, StringType), value)),
-    order)
+      GpuCreateNamedStruct(Seq(
+        GpuLiteral(CudfMaxMinBy.KEY_ORDERING, StringType), order,
+        GpuLiteral(CudfMaxMinBy.KEY_VALUE, StringType), value)),
+      order)
 
   // Extract the value and ordering columns from cuDF results
   // to match the expectation of Spark.
