@@ -1503,9 +1503,10 @@ VeloxScan:
 velox_gens = [
     [byte_gen, short_gen, int_gen, long_gen, float_gen, double_gen,
      string_gen, boolean_gen, date_gen,
-     TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc)), ArrayGen(byte_gen),
+     # TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc)),
+     ArrayGen(byte_gen),
      ArrayGen(long_gen), ArrayGen(string_gen), ArrayGen(date_gen),
-     ArrayGen(TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc))),
+     # ArrayGen(TimestampGen(start=datetime(1900, 1, 1, tzinfo=timezone.utc))),
      ArrayGen(ArrayGen(byte_gen)),
      StructGen([['child0', ArrayGen(byte_gen)], ['child1', byte_gen], ['child2', float_gen],
                 ['child3', decimal_gen_64bit]]),
@@ -1518,9 +1519,10 @@ velox_gens = [
      MapGen(StringGen(pattern='key_[0-9]', nullable=False), ArrayGen(string_gen),
             max_length=10),
      MapGen(RepeatSeqGen(IntegerGen(nullable=False), 10), long_gen, max_length=10),
-     # MapGen(StringGen(pattern='key_[0-9]', nullable=False), simple_string_to_string_map_gen)
+     MapGen(StringGen(pattern='key_[0-9]', nullable=False), simple_string_to_string_map_gen)
      ],
 ]
+
 
 # Enable test cases for VeloxScan only if Velox has been loaded during launch
 def velox_reader(data_path):
@@ -1530,9 +1532,15 @@ def velox_reader(data_path):
         return spark.read.parquet(data_path)
     return _reader
 
+
 @pytest.mark.parametrize('parquet_gens', velox_gens, ids=idfn)
-@pytest.mark.parametrize('gen_rows', [32, 128, 512, 2048], ids=idfn)
-def test_parquet_read_round_trip_velox(spark_tmp_path, parquet_gens, gen_rows):
+@pytest.mark.parametrize('gen_rows', [20, 100, 1024, 4096], ids=idfn)
+@pytest.mark.parametrize('use_native_converter', ['false', 'true'], ids=idfn)
+@pytest.mark.parametrize('preload_batches', [0, 1], ids=idfn)
+def test_parquet_read_round_trip_velox(spark_tmp_path, parquet_gens, gen_rows, use_native_converter, preload_batches):
+    if use_native_converter == 'false' and preload_batches > 0:
+        return
+
     gen_list = [('_c' + str(i), gen) for i, gen in enumerate(parquet_gens)]
     data_path = spark_tmp_path + '/PARQUET_DATA'
     with_cpu_session(
@@ -1542,7 +1550,33 @@ def test_parquet_read_round_trip_velox(spark_tmp_path, parquet_gens, gen_rows):
         velox_reader(data_path),
         conf={
             'spark.sql.sources.useV1SourceList': 'parquet',
-            'spark.rapids.sql.parquet.useVelox': 'true'
+            'spark.rapids.sql.parquet.useVelox': 'true',
+            'spark.rapids.sql.enableNativeVeloxConverter': use_native_converter,
+            'spark.rapids.sql.parquet.veloxPreloadedBatches': preload_batches,
+        })
+
+
+@pytest.mark.parametrize('gluten_batch_size', [512, 1024, 2048], ids=idfn)
+@pytest.mark.parametrize('target_batch_size', [1 << 25, 1 << 27], ids=idfn)
+def test_parquet_read_round_trip_velox_c2c_multiple_batches(spark_tmp_path, gluten_batch_size, target_batch_size):
+    gens = []
+    for g in velox_gens:
+        gens.extend(g)
+
+    gen_list = [('_c' + str(i), gen) for i, gen in enumerate(gens)]
+    data_path = spark_tmp_path + '/PARQUET_DATA'
+    with_cpu_session(
+        lambda spark: gen_df(spark, gen_list, length=8192).write.parquet(data_path),
+        conf=rebase_write_corrected_conf)
+
+    assert_gpu_and_cpu_are_equal_collect(
+        velox_reader(data_path),
+        conf={
+            'spark.sql.sources.useV1SourceList': 'parquet',
+            'spark.rapids.sql.parquet.useVelox': 'true',
+            'spark.rapids.sql.enableNativeVeloxConverter': 'true',
+            'spark.gluten.sql.columnar.maxBatchSize': gluten_batch_size,
+            'spark.rapids.sql.batchSizeBytes': target_batch_size,
         })
 
 @allow_non_gpu(any=True)

@@ -66,9 +66,10 @@ class CoalesceNativeConverter(veloxIter: Iterator[ColumnarBatch],
         // Here we fetch the final value before closing it.
         metrics("C2CTime") += c.eclipsedNanoSecond
         // release the native instance when upstreaming iterator has been exhausted
-        c.close()
+        val detailedMetrics = c.close()
+        val tID = TaskContext.get().taskAttemptId()
+        logError(s"task[$tID] CoalesceNativeConverter finished:\n$detailedMetrics")
         converterImpl = None
-        logError(s"task[${TaskContext.get().taskAttemptId()}] CoalesceNativeConverter closed")
       }
     }
     ret

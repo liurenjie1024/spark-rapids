@@ -88,9 +88,14 @@ case class VectorBuilder(posInSchema: Int,
 }
 
 object VectorBuilder {
-  private val TAIL_INFO_OFFSET = 2
-  private val TAIL_INFO_STRIDE = 4
+  val TAIL_INFO_OFFSET = 2
+  val TAIL_INFO_STRIDE = 4
 
+  // The schema of tail information of vectors which are ready to be flushed
+  // 1. the tail position of dataBuffer
+  // 2. the tail position of offsetBuffer
+  // 3. total row count
+  // 4. total null count
   private def getTailInfoPos(colIndex: Int, infoIndex: Int): Int = {
     colIndex * TAIL_INFO_STRIDE + TAIL_INFO_OFFSET + infoIndex
   }
@@ -119,10 +124,13 @@ class VeloxBatchConverter(runtime: GlutenJniWrapper,
 
   def eclipsedNanoSecond: Long = eclipsed
 
-  def close(): Unit = {
+  def close(): String = {
     require(!deckFilled, "The deck is NOT empty")
     require(columnBuilders.isEmpty, "Please flush existing ColumnBuilders at first")
-    runtime.closeCoalesceConverter(nativeHandle)
+    // We will get the final metrics for each column (and subColumn) before cleaning up.
+    // Then, we will beautify and dump the metrics for performance inspection
+    val nativeMetrics = runtime.closeCoalesceConverter(nativeHandle)
+    VeloxBatchConverter.dumpMetrics(nativeMetrics, schema)
   }
 
   def tryAppendBatch(cb: ColumnarBatch): Boolean = {
@@ -185,6 +193,8 @@ class VeloxBatchConverter(runtime: GlutenJniWrapper,
 
     val tailInfo = runtime.flush(nativeHandle)
     metrics("OutputSizeInBytes") += tailInfo(1)
+    VeloxBatchConverter.nativeMetaPrettyPrint(
+      "TailInfoFlush", tailInfo, VectorBuilder.TAIL_INFO_OFFSET, VectorBuilder.TAIL_INFO_STRIDE)
     val ret = columnBuilders.map(_.build(tailInfo).asInstanceOf[HostColumnVector])
     columnBuilders.clear()
 
@@ -265,6 +275,49 @@ object VeloxBatchConverter extends Logging {
     }
   }
 
+  private def dumpMetrics(metrics: Array[Long], schema: StructType): String = {
+    val alignment = "****"
+    val builder = mutable.StringBuilder.newBuilder
+    builder.append(s"pre-convert time ${metrics(1) / 1000}ms\n")
+      .append(s"vector decode time ${metrics(2) / 1000}ms\n")
+    var offset = 3
+
+    val stack = mutable.Stack[(StructField, Int)]()
+    schema.fields.reverseIterator.foreach(f => stack.push(f -> 1))
+
+    while (stack.nonEmpty) {
+      val (f, depth) = stack.pop()
+
+      (1 to depth).foreach(_ => builder.append(alignment))
+      builder
+        .append(' ')
+        .append(f.toString())
+        .append(s" ${metrics(offset) / 1000}ms " +
+          s"${metrics(offset + 2)}rows ${metrics(offset + 3) / 1024}KB " +
+          s"${metrics(offset + 1)}batches(C:${metrics(offset + 4)}|" +
+          s"I:${metrics(offset + 5)}|R:${metrics(offset + 6)}|S:${metrics(offset + 7)})"
+        )
+        .append('\n')
+      offset += 8
+
+      f.dataType match {
+        case at: ArrayType =>
+          val elem = StructField(f.name + "_elem", at.elementType, at.containsNull)
+          stack.push(elem -> (depth + 1))
+        case mt: MapType =>
+          val valF = StructField(f.name + "_val", mt.valueType, mt.valueContainsNull)
+          stack.push(valF -> (depth + 1))
+          val keyF = StructField(f.name + "_key", mt.keyType, nullable = false)
+          stack.push(keyF -> (depth + 1))
+        case st: StructType =>
+          st.fields.reverseIterator.foreach(ch => stack.push(ch -> (depth + 1)))
+        case _ =>
+      }
+    }
+
+    builder.toString()
+  }
+
   private def decodeSampleInfo(meta: Array[Long],
                                schema: StructType): Array[SampleColumnInfo] = {
     case class DecodeHelper(
@@ -339,14 +392,18 @@ object VeloxBatchConverter extends Logging {
 
   private def nativeMetaPrettyPrint(title: String,
                                     array: Array[Long], offset: Int, step: Int): Unit = {
-    val sb = mutable.StringBuilder.newBuilder
-    sb.append("==HEAD== ").append((0 until offset).map(array).mkString(" | ")).append('\n')
-    (offset until array.length by step).foreach { i =>
-      sb.append(s"  (${(i - offset) / step + 1}) ")
-      sb.append((i until i + step).map(array).mkString(" | "))
-      sb.append('\n')
+    lazy val message: String = {
+      val sb = mutable.StringBuilder.newBuilder
+      sb.append(title).append('\n')
+      sb.append("==HEAD== ").append((0 until offset).map(array).mkString(" | ")).append('\n')
+      (offset until array.length by step).foreach { i =>
+        sb.append(s"  (${(i - offset) / step + 1}) ")
+        sb.append((i until i + step).map(array).mkString(" | "))
+        sb.append('\n')
+      }
+      sb.toString()
     }
-    logInfo(s"$title: \n${sb.toString()}")
+    logDebug(message)
   }
 
   // ColumnView.getValidityBufferSize
