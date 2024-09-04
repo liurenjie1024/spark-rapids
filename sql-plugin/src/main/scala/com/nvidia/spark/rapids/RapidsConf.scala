@@ -1998,6 +1998,12 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
         s"The shuffle type should be one of ${SHUFFLE_SERDE_TYPES.mkString(", ")}")
       .createWithDefault("CPU")
 
+  val SHUFFLE_SPLITRETRY_READ = conf("spark.rapids.shuffle.splitRetryRead.enabled")
+    .doc("When set to true, use the resizeable shuffle reader who will reduce the " +
+      "target batch size by half when getting OOM when doing coalescing shuffle read.")
+    .booleanConf
+    .createWithDefault(true)
+
   // ALLUXIO CONFIGS
   val ALLUXIO_MASTER = conf("spark.rapids.alluxio.master")
     .doc("The Alluxio master hostname. If not set, read Alluxio master URL from " +
@@ -3317,6 +3323,8 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   lazy val loreDumpPath: Option[String] = get(LORE_DUMP_PATH)
 
   lazy val caseWhenFuseEnabled: Boolean = get(CASE_WHEN_FUSE)
+
+  lazy val shuffleSplitRetryReadEnabled: Boolean = get(SHUFFLE_SPLITRETRY_READ)
 
   private val optimizerDefaults = Map(
     // this is not accurate because CPU projections do have a cost due to appending values

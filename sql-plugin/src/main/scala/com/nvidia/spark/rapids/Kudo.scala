@@ -33,8 +33,10 @@ object Kudo {
     .createWithDefault(1)
 
   def getKudoConf(conf: SQLConf): Option[KudoConf] = {
-    val rapidsConf = new RapidsConf(conf)
+    getKudoConf(new RapidsConf(conf))
+  }
 
+  def getKudoConf(rapidsConf: RapidsConf): Option[KudoConf] = {
     if (rapidsConf.get(SHUFFLE_ENABLE_KUDO)) {
       val mode = CompressionMode.valueOf(rapidsConf.get(SHUFFLE_KUDO_COMPRESSION_MODE).toUpperCase)
       val batchMinColumns = rapidsConf.get(SHUFFLE_KUDO_BATCH_MIN_COLUMN)
