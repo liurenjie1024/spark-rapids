@@ -1,6 +1,7 @@
 package com.nvidia.spark.rapids
 
-import ai.rapids.cudf.serde.{KudoSerializer, TableSerializer}
+import ai.rapids.cudf.serde.TableSerializer
+import ai.rapids.cudf.serde.kudo.KudoSerializer
 import ai.rapids.cudf.serde.kudo2.CompressionMode
 import com.nvidia.spark.rapids.RapidsConf.conf
 
