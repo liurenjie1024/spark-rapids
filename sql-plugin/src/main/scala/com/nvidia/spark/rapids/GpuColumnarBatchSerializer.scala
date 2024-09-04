@@ -24,7 +24,8 @@ import scala.reflect.ClassTag
 
 import ai.rapids.cudf.{HostColumnVector, HostMemoryBuffer, JCudfSerialization, NvtxColor, NvtxRange}
 import ai.rapids.cudf.JCudfSerialization.SerializedTableHeader
-import ai.rapids.cudf.serde.{KudoSerializer, TableSerializer}
+import ai.rapids.cudf.serde.TableSerializer
+import ai.rapids.cudf.serde.kudo.SerializedTable
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 
@@ -134,7 +135,7 @@ class KudoBatchIterator(private val din: InputStream,
         Option(kudo.readOneTableBuffer(din)) match {
           case Some(col) =>
             nextBatch = Some(new KudoSerializedTableColumn(
-              col.asInstanceOf[KudoSerializer.SerializedTable])
+              col.asInstanceOf[SerializedTable])
               .toColumnarBatch)
             true
           case None =>
@@ -158,7 +159,7 @@ class KudoBatchIterator(private val din: InputStream,
   }
 }
 
-class KudoSerializedTableColumn(val inner: KudoSerializer.SerializedTable) extends
+class KudoSerializedTableColumn(val inner: SerializedTable) extends
   GpuColumnVectorBase(NullType) {
 
   override def close(): Unit = Option(inner).foreach(_.close())
