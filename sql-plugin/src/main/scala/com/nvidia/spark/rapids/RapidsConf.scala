@@ -1594,11 +1594,6 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .checkValues(Set("sort", "repartition"))
     .createWithDefault("repartition")
 
-  // todo: remove this
-  object AggFallbackAlgorithm extends Enumeration {
-    val SORT, REPARTITION = Value
-  }
-
   val FORCE_SINGLE_PASS_PARTIAL_SORT_AGG: ConfEntryWithDefault[Boolean] =
     conf("spark.rapids.sql.agg.forceSinglePassPartialSort")
     .doc("Force a single pass partial sort agg to happen in all cases that it could, " +
