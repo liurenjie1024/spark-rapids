@@ -5,9 +5,10 @@ import ai.rapids.cudf.serde.kudo.KudoSerializer
 import ai.rapids.cudf.serde.kudo2.CompressionMode
 import com.nvidia.spark.rapids.RapidsConf.conf
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.internal.SQLConf
 
-object Kudo {
+object Kudo extends Logging {
   val SHUFFLE_ENABLE_KUDO = conf("spark.rapids.sql.shuffle.kudo.enable")
     .doc("Eanble kudo shuffle")
     .booleanConf
@@ -39,6 +40,7 @@ object Kudo {
 
   def getKudoConf(rapidsConf: RapidsConf): Option[KudoConf] = {
     if (rapidsConf.get(SHUFFLE_ENABLE_KUDO)) {
+      logWarning("Kudo shuffle is experimental and may not be stable, use at your own risk")
       val mode = CompressionMode.valueOf(rapidsConf.get(SHUFFLE_KUDO_COMPRESSION_MODE).toUpperCase)
       val batchMinColumns = rapidsConf.get(SHUFFLE_KUDO_BATCH_MIN_COLUMN)
       val batchMaxBytes = rapidsConf.get(SHUFFLE_KUDO_BATCH_MAX_SIZE)
