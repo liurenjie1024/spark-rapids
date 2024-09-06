@@ -348,7 +348,7 @@ class KudoShuffleCoalesceReader(
         val totalRowsNum = tables.map(getNumRows).sum
         RowsOnly(totalRowsNum)
       } else {
-        HostColumns(kudoSer.mergeToHost(util.Arrays.asList(tables: _*), cudfSchema))
+        HostColumns(kudoSer.mergeToHost(tables.map(_.inner).toList, cudfSchema))
       }
     }
 
