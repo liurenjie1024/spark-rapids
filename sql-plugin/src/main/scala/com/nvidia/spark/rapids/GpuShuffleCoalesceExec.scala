@@ -76,8 +76,9 @@ case class GpuShuffleCoalesceExec(child: SparkPlan, targetBatchByteSize: Long)
     val metricsMap = allMetrics
     val targetSize = targetBatchByteSize
     val dataTypes = GpuColumnVector.extractTypes(schema)
-    val useSplitRetryRead = new RapidsConf(conf).shuffleSplitRetryReadEnabled
-    val kudoOpt = Kudo.getKudoConf(conf)
+    val rapidsConf = new RapidsConf(conf)
+    val useSplitRetryRead = rapidsConf.shuffleSplitRetryReadEnabled
+    val kudoOpt = rapidsConf.getKudoConf()
 
     child.executeColumnar().mapPartitions { iter =>
       GpuShuffleCoalesceUtils.getGpuShuffleCoalesceIterator(

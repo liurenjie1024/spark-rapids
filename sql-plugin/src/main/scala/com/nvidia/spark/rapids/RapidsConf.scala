@@ -21,6 +21,9 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.{HashMap, ListBuffer}
 
 import ai.rapids.cudf.Cuda
+import ai.rapids.cudf.serde.TableSerializer
+import ai.rapids.cudf.serde.kudo.KudoSerializer
+import ai.rapids.cudf.serde.kudo2.CompressionMode
 import com.nvidia.spark.rapids.jni.RmmSpark.OomInjectionType
 import com.nvidia.spark.rapids.lore.{LoreId, OutputLoreId}
 import java.util
@@ -2478,6 +2481,31 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
       .createWithDefault(true)
 
 
+  val SHUFFLE_ENABLE_KUDO = conf("spark.rapids.sql.shuffle.kudo.enable")
+    .doc("Eanble kudo shuffle")
+    .booleanConf
+    .createWithDefault(false)
+
+  val SHUFFLE_KUDO_COMPRESSION_MODE = conf("spark.rapids.sql.shuffle.kudo.compression.mode")
+    .doc("Compresson mode for kudo shuffle")
+    .stringConf
+    .createWithDefault("buffer")
+
+  val SHUFFLE_KUDO_BATCH_MIN_COLUMN = conf("spark.rapids.sql.shuffle.kudo.batch.min.column")
+    .doc("Minimum number of columns for kudo shuffle to use batch compression mode")
+    .integerConf
+    .createWithDefault(10)
+
+  val SHUFFLE_KUDO_BATCH_MAX_SIZE = conf("spark.rapids.sql.shuffle.kudo.batch.max.size")
+    .doc("Maximum number of bytes for kudo shuffle to use batch compression mode")
+    .longConf
+    .createWithDefault(5 * 1024 * 1024)
+
+  val SHUFFLE_KUDO_COMPRESSION_LEVEL = conf("spark.rapids.sql.shuffle.kudo.compression.level")
+    .doc("Compression level used in kudo shuffle")
+    .integerConf
+    .createWithDefault(1)
+
   private def printSectionHeader(category: String): Unit =
     println(s"\n### $category")
 
@@ -3407,6 +3435,19 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   def isConfExplicitlySet(key: String): Boolean = {
     conf.contains(key)
   }
+
+  def getKudoConf(): Option[KudoConf] = {
+    if (get(SHUFFLE_ENABLE_KUDO)) {
+      logWarning("Kudo shuffle is experimental and may not be stable, use at your own risk")
+      val mode = CompressionMode.valueOf(get(SHUFFLE_KUDO_COMPRESSION_MODE).toUpperCase)
+      val batchMinColumns = get(SHUFFLE_KUDO_BATCH_MIN_COLUMN)
+      val batchMaxBytes = get(SHUFFLE_KUDO_BATCH_MAX_SIZE)
+      val compressionLevel = get(SHUFFLE_KUDO_COMPRESSION_LEVEL)
+      Some(KudoConf(mode, batchMinColumns, batchMaxBytes, compressionLevel))
+    } else {
+      None
+    }
+  }
 }
 
 case class OomInjectionConf(
@@ -3416,3 +3457,7 @@ case class OomInjectionConf(
   oomInjectionFilter: OomInjectionType
 )
 
+case class KudoConf(compressMode: CompressionMode, columnBatchMinCol: Int,
+    columnBatchMaxSize: Long, compressionLevel: Int) {
+  def serializer(): TableSerializer = new KudoSerializer()
+}

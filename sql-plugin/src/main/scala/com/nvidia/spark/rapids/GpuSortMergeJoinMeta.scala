@@ -96,7 +96,7 @@ class GpuSortMergeJoinMeta(
           conf.isGPUShuffle,
           conf.gpuTargetBatchSizeBytes,
           conf.shuffleSplitRetryReadEnabled,
-          Kudo.getKudoConf(conf),
+          conf.getKudoConf(),
           join.isSkewJoin)(
           join.leftKeys,
           join.rightKeys,
@@ -112,7 +112,7 @@ class GpuSortMergeJoinMeta(
           conf.isGPUShuffle,
           conf.gpuTargetBatchSizeBytes,
           conf.shuffleSplitRetryReadEnabled,
-          Kudo.getKudoConf(conf),
+          conf.getKudoConf(),
           join.isSkewJoin)(
           join.leftKeys,
           join.rightKeys)
