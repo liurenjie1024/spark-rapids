@@ -84,7 +84,7 @@ class GpuShuffledHashJoinMeta(
           conf.isGPUShuffle,
           conf.gpuTargetBatchSizeBytes,
           conf.shuffleSplitRetryReadEnabled,
-          Kudo.getKudoConf(conf),
+          conf.getKudoConf(),
           isSkewJoin = false)(
           join.leftKeys,
           join.rightKeys,
@@ -100,7 +100,7 @@ class GpuShuffledHashJoinMeta(
           conf.isGPUShuffle,
           conf.gpuTargetBatchSizeBytes,
           conf.shuffleSplitRetryReadEnabled,
-          Kudo.getKudoConf(conf),
+          conf.getKudoConf(),
           isSkewJoin = false)(
           join.leftKeys,
           join.rightKeys)
