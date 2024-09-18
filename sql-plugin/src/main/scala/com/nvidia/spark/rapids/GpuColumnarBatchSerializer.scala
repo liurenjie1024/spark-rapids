@@ -168,7 +168,8 @@ class KudoSerializedTableColumn(val inner: SerializedTable) extends
 
   override def numNulls(): Int = throw new IllegalStateException("Should not be called!")
 
-  def toColumnarBatch: ColumnarBatch = new ColumnarBatch(Array(this), inner.getHeader.getNumRows)
+  def toColumnarBatch: ColumnarBatch = new ColumnarBatch(Array(this),
+    inner.getHeader.getNumRows.toInt)
 }
 
 

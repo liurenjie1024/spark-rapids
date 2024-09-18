@@ -23,7 +23,6 @@ import scala.collection.mutable.{HashMap, ListBuffer}
 import ai.rapids.cudf.Cuda
 import ai.rapids.cudf.serde.TableSerializer
 import ai.rapids.cudf.serde.kudo.KudoSerializer
-import ai.rapids.cudf.serde.kudo2.CompressionMode
 import com.nvidia.spark.rapids.jni.RmmSpark.OomInjectionType
 import com.nvidia.spark.rapids.lore.{LoreId, OutputLoreId}
 import java.util
@@ -3449,11 +3448,7 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   def getKudoConf(): Option[KudoConf] = {
     if (get(SHUFFLE_ENABLE_KUDO)) {
       logWarning("Kudo shuffle is experimental and may not be stable, use at your own risk")
-      val mode = CompressionMode.valueOf(get(SHUFFLE_KUDO_COMPRESSION_MODE).toUpperCase)
-      val batchMinColumns = get(SHUFFLE_KUDO_BATCH_MIN_COLUMN)
-      val batchMaxBytes = get(SHUFFLE_KUDO_BATCH_MAX_SIZE)
-      val compressionLevel = get(SHUFFLE_KUDO_COMPRESSION_LEVEL)
-      Some(KudoConf(mode, batchMinColumns, batchMaxBytes, compressionLevel))
+      Some(KudoConf())
     } else {
       None
     }
@@ -3467,7 +3462,6 @@ case class OomInjectionConf(
   oomInjectionFilter: OomInjectionType
 )
 
-case class KudoConf(compressMode: CompressionMode, columnBatchMinCol: Int,
-    columnBatchMaxSize: Long, compressionLevel: Int) {
+case class KudoConf() {
   def serializer(): TableSerializer = new KudoSerializer()
 }
