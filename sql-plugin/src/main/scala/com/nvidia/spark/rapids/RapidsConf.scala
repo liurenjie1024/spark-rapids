@@ -1722,11 +1722,21 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .booleanConf
     .createWithDefault(true)
 
-  val PUSH_DOWN_ALL_FILTERS_TO_VELOX = conf("spark.rapids.sql.parquet.pushDownAllFiltersToVelox")
-    .doc("Push down all filters to Velox")
+  object VeloxFilterPushdownType extends Enumeration {
+    val ALL_SUPPORTED, NONE, UNCHANGED = Value
+  }  
+
+  val PUSH_DOWN_FILTERS_TO_VELOX = conf("spark.rapids.sql.parquet.pushDownFiltersToVelox")
+    .doc("Push down all supported filters to Velox if set to ALL_SUPPORTED. " +
+      "If set to NONE, no filters will be pushed down so all filters are on the GPU. " +
+      "If set to UNCHANGED, filters will be both pushed down and keeped on the GPU. " +
+      "UNCHANGED is to make the behavior same as before.")
     .internal()
-    .booleanConf
-    .createWithDefault(true)
+    .stringConf
+    .transform(_.toUpperCase(java.util.Locale.ROOT))
+    .checkValues(VeloxFilterPushdownType.values.map(_.toString))
+    .createWithDefault(VeloxFilterPushdownType.ALL_SUPPORTED.toString)
+
 
   val ENABLE_NATIVE_VELOX_CONVERTER = conf("spark.rapids.sql.enableNativeVeloxConverter")
     .doc("Re-formatting VeloxColumn to align with the memory layout of GpuColumn directly")
@@ -2929,7 +2939,7 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
 
   lazy val parquetVeloxReader: Boolean = get(PARQUET_VELOX_READER)
 
-  lazy val pushDownAllFiltersToVelox: Boolean = get(PUSH_DOWN_ALL_FILTERS_TO_VELOX)
+  lazy val pushDownFiltersToVelox: String = get(PUSH_DOWN_FILTERS_TO_VELOX)
 
   lazy val enableNativeVeloxConverter: Boolean = get(ENABLE_NATIVE_VELOX_CONVERTER)
 
