@@ -24,6 +24,7 @@ import ai.rapids.cudf._
 import com.nvidia.spark.Retryable
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.GpuMetric._
+import com.nvidia.spark.rapids.RapidsConf.VeloxFilterPushdownType
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.RmmRapidsRetryIterator.{splitSpillableInHalfByRows, withRestoreOnRetry, withRetry, withRetryNoSplit}
 import com.nvidia.spark.rapids.jni.GpuSplitAndRetryOOM
@@ -784,24 +785,43 @@ case class GpuFilterExecMeta(
   rule: DataFromReplacementRule
 ) extends SparkPlanMeta[FilterExec](filter, conf, parentMetaOpt, rule) with PredicateHelper {
 
-  lazy val canBePushedToVelox: Boolean = {
+  lazy val notSupportedByVeloxFilters = Seq(
+    classOf[Factorial],
+    classOf[ConcatWs],
+    classOf[LengthOfJsonArray],
+    classOf[TruncDate],
+    classOf[Sequence],
+    classOf[MapFromArrays]
+  )
+
+  lazy val filters = splitConjunctivePredicates(filter.condition)
+
+  // if the child is a FileSourceScanExec and config is open
+  lazy val canBePushedToVelox = {
     filter.child match {
-      case fsse: FileSourceScanExec =>
-        conf.pushDownAllFiltersToVelox &&
-        conf.parquetVeloxReader &&
+      case fsse: FileSourceScanExec if conf.parquetVeloxReader &&
         fsse.asInstanceOf[FileSourceScanExec].relation.fileFormat.getClass ==
           classOf[ParquetFileFormat] &&
         !fsse.asInstanceOf[FileSourceScanExec].requiredSchema.exists { field =>
           TrampolineUtil.dataTypeExistsRecursively(field.dataType,
               e => e.isInstanceOf[TimestampType] || e.isInstanceOf[BinaryType])
-        }
-      case _ => false
+        } => conf.pushDownFiltersToVelox
+      case _ => "UNCHANGED"
     }
   }
 
+  lazy val containsNotSupportedCondition = {
+    filters.exists {filter => notSupportedByVeloxFilters.exists(_.isInstance(filter))}
+  }
+
   override def tagPlanForGpu(): Unit = {
-    if (canBePushedToVelox) {
+    if (canBePushedToVelox == VeloxFilterPushdownType.ALL_SUPPORTED && 
+        !containsNotSupportedCondition) {
+      // if all filters are supported by velox, we can skip the filter, but we need to 
+      // keep the convertToGpu to do the filter push down
       mustWorkOnGpuIKnowWhatIAmDoing() // Or do I?
+    } else {
+      super.tagPlanForGpu()
     }
   }
 
@@ -834,17 +854,41 @@ case class GpuFilterExecMeta(
         throw new IllegalStateException("Unexpected plan type")
     }
 
-  override def convertToGpu(): GpuExec = {
-    println(s"canBePushedToVelox: $canBePushedToVelox")
-    filter.child match {
-      case fsse: FileSourceScanExec if canBePushedToVelox => {
-        val newCondition = applyFilterPushdownToScan(filter)
-        val newScan = fsse.copy(dataFilters = newCondition)
-        (new VeloxFileSourceScanExecMeta(newScan, conf, parentMetaOpt, rule)).convertToGpu()
+  override def convertToGpu(): GpuExec = {    
+    (filter.child, canBePushedToVelox) match {
+      case (fsse: FileSourceScanExec, "NONE") => {
+        val updatedFsseChild = fsse.copy(dataFilters = Seq.empty)
+        val updatedFilter = FilterExec(filters.reduceLeft(And), updatedFsseChild)
+        val newMeta = GpuFilterExecMeta(updatedFilter, conf, parentMetaOpt, rule)
+        GpuFilterExec(newMeta.childExprs.head.convertToGpu(),
+          (new VeloxFileSourceScanExecMeta(updatedFsseChild, conf, parentMetaOpt, rule))
+          .convertToGpu())()
       }
-      case _ =>
+      case (fsse: FileSourceScanExec, "ALL_SUPPORTED") => {
+        if (containsNotSupportedCondition) {
+          // we need to extract the unsupported conditions and push down the rest
+          val (notSupportedConditions, supportedConditions) = filters.partition {
+            case filter if notSupportedByVeloxFilters.exists(_.isInstance(filter)) =>
+              true
+            case _ => false
+          }
+          val updatedFsseChild = fsse.copy(dataFilters = supportedConditions)
+          val updatedFilter = FilterExec(notSupportedConditions.reduceLeft(And), updatedFsseChild)
+          val newMeta = GpuFilterExecMeta(updatedFilter, conf, parentMetaOpt, rule)
+          GpuFilterExec(newMeta.childExprs.head.convertToGpu(),
+            (new VeloxFileSourceScanExecMeta(updatedFsseChild, conf, parentMetaOpt, rule))
+            .convertToGpu())()
+        } else {
+          // the filterExec can be removed and the filter can be pushed down to the scan
+          val newCondition = applyFilterPushdownToScan(filter)
+          val newScan = fsse.copy(dataFilters = newCondition)
+          (new VeloxFileSourceScanExecMeta(newScan, conf, parentMetaOpt, rule)).convertToGpu()
+        }
+      }
+      case (_, _) => {
         GpuFilterExec(childExprs.head.convertToGpu(),
           childPlans.head.convertIfNeeded())()
+      }
     }
   }
 }
