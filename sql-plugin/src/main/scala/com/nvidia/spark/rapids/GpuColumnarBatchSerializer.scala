@@ -249,6 +249,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
               val columnsStr = columns.zipWithIndex.map({
                 case (col, col_idx) =>
                   val data = (0 until col.getRowCount)
+                    .map(_.toInt)
                     .map(col.getElement)
                     .map(_.toString)
                     .mkString("[", "|", "]")
