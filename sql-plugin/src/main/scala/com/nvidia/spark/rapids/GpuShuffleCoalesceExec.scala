@@ -301,11 +301,8 @@ class KudoShuffleCoalesceIterator(
 
         GpuSemaphore.acquireIfNecessary(TaskContext.get())
 
-        val contigTable = kudo.mergeTable(left.toList, cudfSchema)
-        contigTable.getBuffer.close()
-
-        withResource(contigTable.getTable) { cudfTable =>
-          GpuColumnVector.from(cudfTable, sparkSchema.fields.map(_.dataType))
+        withResource(kudo.mergeTable(left.toList, cudfSchema)) { cudfTable =>
+          GpuColumnVectorFromBuffer.from(cudfTable, sparkSchema.fields.map(_.dataType))
         }
       }
     }
