@@ -250,7 +250,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
                 case (col, col_idx) =>
                   val data = (0 until col.getRowCount)
                     .map(_.toInt)
-                    .map(col.getElement)
+                    .map(col.getElement(_))
                     .map(_.toString)
                     .mkString("[", "|", "]")
                   s"Column $col_idx: ${col.getType}, null count: ${col.getNullCount}, data: $data"
