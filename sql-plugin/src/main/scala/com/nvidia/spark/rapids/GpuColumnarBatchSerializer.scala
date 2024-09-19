@@ -29,9 +29,11 @@ import ai.rapids.cudf.serde.kudo.SerializedTable
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
-
 import org.apache.spark.TaskContext
+
+import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.NullType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -202,7 +204,8 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
     , serTime: GpuMetric, deserTime: GpuMetric)
   extends SerializerInstance {
 
-  override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
+  override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream
+  with Logging {
     private[this] val dOut: DataOutputStream =
       new DataOutputStream(new BufferedOutputStream(out))
 
@@ -237,8 +240,29 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
             }
           }
 
+          {
+            val taskContext = TaskContext.get()
+            if (taskContext != null) {
+              val info = s"Shuffle data for task, stage id: ${taskContext.stageId()}, partition " +
+                s"id: ${taskContext.partitionId()}, attempt number: ${taskContext.attemptNumber()}"
+
+              val columns = columns.zipWithIndex.map({
+                case (col, col_idx) =>
+                  val data = (0 until col.getRowCount)
+                    .map(col.getElement)
+                    .map(_.toString)
+                    .mkString("[", "|", "]")
+                  s"Column $col_idx: ${col.getType}, null count: ${col.getNullCount}, data: $data"
+              }).mkString("\n")
+
+              logWarning(s"$info\n$columns")
+            }
+          }
+
+
           if (kudoOpt.isDefined) {
             withResource(new NvtxRange("Serialize Batch", NvtxColor.YELLOW)) { _ =>
+
               val kudo = kudoOpt.get.serializer()
               dataSize += kudo.writeToStream(columns, dOut, startRow, numRows)
             }

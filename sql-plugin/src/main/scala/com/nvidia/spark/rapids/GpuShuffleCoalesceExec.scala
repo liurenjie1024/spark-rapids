@@ -26,8 +26,9 @@ import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
 import java.util
-
 import org.apache.spark.TaskContext
+
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -259,7 +260,7 @@ class KudoShuffleCoalesceIterator(
     metricsMap: Map[String, GpuMetric],
     kudo: TableSerializer,
     sparkSchema: StructType)
-  extends Iterator[ColumnarBatch] with AutoCloseable {
+  extends Iterator[ColumnarBatch] with AutoCloseable with Logging {
   private[this] val concatTimeMetric = metricsMap(GpuMetric.CONCAT_TIME)
   private[this] val inputBatchesMetric = metricsMap(GpuMetric.NUM_INPUT_BATCHES)
   private[this] val inputRowsMetric = metricsMap(GpuMetric.NUM_INPUT_ROWS)
@@ -361,6 +362,18 @@ class KudoShuffleCoalesceIterator(
           throw new NoSuchElementException("No more host batches to concatenate")
         }
         val batch = concatenateTables()
+
+        {
+          val taskContext = TaskContext.get()
+          if (taskContext != null) {
+            logWarning(s"Shuffle coalesce result info, stage id: ${taskContext.stageId()}, " +
+              s"partition id: ${taskContext.partitionId()}, " +
+              s"attempt number: ${taskContext.attemptNumber()}")
+            val name = s"shuffle_coalesce_result, stage_id=${taskContext.stageId()}, " +
+              s"partition_id=${taskContext.partitionId()}"
+            GpuColumnVector.debug(name, batch)
+          }
+        }
         outputBatchesMetric += 1
         outputRowsMetric += batch.numRows()
         batch
