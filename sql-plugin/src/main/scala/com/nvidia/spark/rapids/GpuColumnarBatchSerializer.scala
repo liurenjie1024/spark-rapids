@@ -246,7 +246,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
               val info = s"Shuffle data for task, stage id: ${taskContext.stageId()}, partition " +
                 s"id: ${taskContext.partitionId()}, attempt number: ${taskContext.attemptNumber()}"
 
-              val columns = columns.zipWithIndex.map({
+              val columnsStr = columns.zipWithIndex.map({
                 case (col, col_idx) =>
                   val data = (0 until col.getRowCount)
                     .map(col.getElement)
@@ -255,7 +255,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
                   s"Column $col_idx: ${col.getType}, null count: ${col.getNullCount}, data: $data"
               }).mkString("\n")
 
-              logWarning(s"$info\n$columns")
+              logWarning(s"$info\n$columnsStr")
             }
           }
 
