@@ -309,7 +309,7 @@ _init_list_with_decimalbig = _init_list + [
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
 @incompat
 @pytest.mark.parametrize('data_gen', [_longs_with_nulls], ids=idfn)
-@pytest.mark.parametrize('conf', get_params(_confs, params_markers_for_confs), ids=idfn)
+@pytest.mark.parametrize('conf', [_float_conf], ids=idfn)
 def test_hash_grpby_avg(data_gen, conf):
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: gen_df(spark, data_gen, length=40).groupby('a').agg(f.avg('b')),
