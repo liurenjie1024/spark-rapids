@@ -57,7 +57,6 @@ _default_conf = {
     'spark.rapids.sql.variableFloatAgg.enabled': 'false',
     'spark.sql.legacy.allowNegativeScaleOfDecimal': 'true',
     'spark.rapids.sql.shuffle.kudo.enable': 'true',
-    'spark.sql.shuffle.partitions': '1',
 }
 
 def _set_all_confs(conf):
