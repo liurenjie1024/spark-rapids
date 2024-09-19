@@ -260,7 +260,7 @@ class KudoShuffleCoalesceIterator(
     metricsMap: Map[String, GpuMetric],
     kudo: TableSerializer,
     sparkSchema: StructType)
-  extends Iterator[ColumnarBatch] with AutoCloseable with Logging {
+  extends Iterator[ColumnarBatch] with AutoCloseable {
   private[this] val concatTimeMetric = metricsMap(GpuMetric.CONCAT_TIME)
   private[this] val inputBatchesMetric = metricsMap(GpuMetric.NUM_INPUT_BATCHES)
   private[this] val inputRowsMetric = metricsMap(GpuMetric.NUM_INPUT_ROWS)
@@ -366,9 +366,6 @@ class KudoShuffleCoalesceIterator(
         {
           val taskContext = TaskContext.get()
           if (taskContext != null) {
-            logWarning(s"Shuffle coalesce result info, stage id: ${taskContext.stageId()}, " +
-              s"partition id: ${taskContext.partitionId()}, " +
-              s"attempt number: ${taskContext.attemptNumber()}")
             val name = s"shuffle_coalesce_result, stage_id=${taskContext.stageId()}, " +
               s"partition_id=${taskContext.partitionId()}"
             GpuColumnVector.debug(name, batch)

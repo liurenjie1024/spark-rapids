@@ -203,8 +203,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
     , serTime: GpuMetric, deserTime: GpuMetric)
   extends SerializerInstance {
 
-  override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream
-  with Logging {
+  override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
     private[this] val dOut: DataOutputStream =
       new DataOutputStream(new BufferedOutputStream(out))
 
@@ -242,7 +241,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
           {
             val taskContext = TaskContext.get()
             if (taskContext != null) {
-              val info = s"Shuffle data for task, stage id: ${taskContext.stageId()}, partition " +
+              val info = s"shuffle_data_for_task, stage_id: ${taskContext.stageId()}, partition " +
                 s"id: ${taskContext.partitionId()}, attempt number: ${taskContext.attemptNumber()}"
 
               val columnsStr = columns.zipWithIndex.map({
@@ -254,7 +253,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
                   s"Column $col_idx: ${col.getType}, null count: ${col.getNullCount}, data: $data"
               }).mkString("\n")
 
-              logWarning(s"$info\n$columnsStr")
+              System.err.println(s"DEBUG $info\n$columnsStr")
             }
           }
 
