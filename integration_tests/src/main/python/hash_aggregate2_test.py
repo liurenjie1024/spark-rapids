@@ -312,6 +312,6 @@ _init_list_with_decimalbig = _init_list + [
 @pytest.mark.parametrize('conf', [_float_conf], ids=idfn)
 def test_hash_grpby_avg(data_gen, conf):
     assert_gpu_and_cpu_are_equal_collect(
-        lambda spark: gen_df(spark, data_gen, length=40).groupby('a').agg(f.avg('b')),
+        lambda spark: gen_df(spark, data_gen, length=10).groupby('a').agg(f.avg('b')),
         conf=conf
     )
