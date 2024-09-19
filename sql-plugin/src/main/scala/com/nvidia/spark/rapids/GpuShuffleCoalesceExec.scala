@@ -317,7 +317,7 @@ class KudoShuffleCoalesceIterator(
         "should only track at most one buffer that is not in a batch")
       val header = serializedTables.peekFirst().getHeader
       batchByteSize = header.getTotalDataLen
-      numRowsInBatch = header.getNumRows
+      numRowsInBatch = header.getNumRows.toInt
     }
 
     result
@@ -338,7 +338,7 @@ class KudoShuffleCoalesceIterator(
             // always add the first table to the batch even if its beyond the target limits
             if (batchCanGrow || numTablesInBatch == 0) {
               numTablesInBatch += 1
-              numRowsInBatch += tableColumn.getHeader.getNumRows
+              numRowsInBatch += tableColumn.getHeader.getNumRows.toInt
               batchByteSize += tableColumn.getHeader.getTotalDataLen
             }
           } else {
