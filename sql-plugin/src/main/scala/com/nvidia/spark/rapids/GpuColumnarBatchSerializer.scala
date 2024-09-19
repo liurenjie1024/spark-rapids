@@ -29,11 +29,10 @@ import ai.rapids.cudf.serde.kudo.SerializedTable
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
-import org.apache.spark.TaskContext
 
+import org.apache.spark.TaskContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
-import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.types.NullType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -248,8 +247,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
 
               val columnsStr = columns.zipWithIndex.map({
                 case (col, col_idx) =>
-                  val data = (0 until col.getRowCount)
-                    .map(_.toInt)
+                  val data = (0 until col.getRowCount.toInt)
                     .map(col.getElement(_))
                     .map(_.toString)
                     .mkString("[", "|", "]")
