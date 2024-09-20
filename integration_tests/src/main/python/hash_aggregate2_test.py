@@ -376,7 +376,7 @@ _all_basic_gens_with_all_nans_cases = all_basic_gens + [SetValuesGen(t, [math.na
 @ignore_order(local=True, arrays=["blist"])
 @pytest.mark.parametrize('data_gen', [[
     ('a', RepeatSeqGen(LongGen(), length=20)),
-    ('b', RepeatSeqGen(ArrayGen(int_gen), length=15)),
+    ('b', RepeatSeqGen(LongGen(), length=15)),
     ('c', UniqueLongGen())]], ids=idfn)
 @pytest.mark.parametrize('use_obj_hash_agg', [True], ids=idfn)
 def test_hash_groupby_collect_list(data_gen, use_obj_hash_agg):
