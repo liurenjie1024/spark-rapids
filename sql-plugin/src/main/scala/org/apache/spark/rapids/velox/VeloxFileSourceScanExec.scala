@@ -44,14 +44,15 @@ case class VeloxFileSourceScanExec(
     tableIdentifier: Option[TableIdentifier],
     disableBucketedScan: Boolean = false,
     queryUsesInputFile: Boolean = false,
-    alluxioPathsMap: Option[Map[String, String]])(@transient val rapidsConf: RapidsConf)
+    alluxioPathsMap: Option[Map[String, String]],
+    filteredOutput: Option[Seq[Attribute]] = None)(@transient val rapidsConf: RapidsConf)
   extends GpuDataSourceScanExec with GpuExec {
   import GpuMetric._
 
   private val glutenScan: FileSourceScanExecTransformer = {
     new FileSourceScanExecTransformer(
       relation,
-      originalOutput,
+      output,
       requiredSchema,
       partitionFilters,
       optionalBucketSet,
@@ -63,7 +64,7 @@ case class VeloxFileSourceScanExec(
 
   private val coalesceSizeGoal = rapidsConf.gpuTargetBatchSizeBytes
 
-  override def output: Seq[Attribute] = glutenScan.output
+  override def output: Seq[Attribute] = filteredOutput.getOrElse(originalOutput)
 
   override lazy val metadata: Map[String, String] = {
     def seqToString(seq: Seq[Any]) = seq.mkString("[", ", ", "]")

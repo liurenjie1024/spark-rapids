@@ -854,17 +854,16 @@ case class GpuFilterExecMeta(
         throw new IllegalStateException("Unexpected plan type")
     }
 
-  override def convertToGpu(): GpuExec = {    
+  override def convertToGpu(): GpuExec = {
     (filter.child, canBePushedToVelox) match {
-      case (fsse: FileSourceScanExec, "NONE") => {
+      case (fsse: FileSourceScanExec, "NONE") =>
         val updatedFsseChild = fsse.copy(dataFilters = Seq.empty)
         val updatedFilter = FilterExec(filters.reduceLeft(And), updatedFsseChild)
         val newMeta = GpuFilterExecMeta(updatedFilter, conf, parentMetaOpt, rule)
         GpuFilterExec(newMeta.childExprs.head.convertToGpu(),
           (new VeloxFileSourceScanExecMeta(updatedFsseChild, conf, parentMetaOpt, rule))
-          .convertToGpu())()
-      }
-      case (fsse: FileSourceScanExec, "ALL_SUPPORTED") => {
+            .convertToGpu())()
+      case (fsse: FileSourceScanExec, "ALL_SUPPORTED") =>
         if (containsNotSupportedCondition) {
           // we need to extract the unsupported conditions and push down the rest
           val (notSupportedConditions, supportedConditions) = filters.partition {
@@ -877,18 +876,22 @@ case class GpuFilterExecMeta(
           val newMeta = GpuFilterExecMeta(updatedFilter, conf, parentMetaOpt, rule)
           GpuFilterExec(newMeta.childExprs.head.convertToGpu(),
             (new VeloxFileSourceScanExecMeta(updatedFsseChild, conf, parentMetaOpt, rule))
-            .convertToGpu())()
+              .convertToGpu())()
         } else {
           // the filterExec can be removed and the filter can be pushed down to the scan
           val newCondition = applyFilterPushdownToScan(filter)
           val newScan = fsse.copy(dataFilters = newCondition)
-          (new VeloxFileSourceScanExecMeta(newScan, conf, parentMetaOpt, rule)).convertToGpu()
+          // The FilterExec might change the outputAttr of the childPlan. Therefore, it is
+          // essential to use the outputAttr of FilterExec as the outputAttr of VeloxScanExec if
+          // the FilterExec is supposed to be eliminated. Otherwise, schema mismatch will occur
+          // when AQE is enabled.
+          val meta = new VeloxFileSourceScanExecMeta(newScan,
+            conf, parentMetaOpt, rule, Some(filter.output))
+          meta.convertToGpu()
         }
-      }
-      case (_, _) => {
+      case (_, _) =>
         GpuFilterExec(childExprs.head.convertToGpu(),
           childPlans.head.convertIfNeeded())()
-      }
     }
   }
 }
