@@ -552,6 +552,8 @@ public class GpuColumnVector extends GpuColumnVectorBase {
           }
           visit(childrenTypes, childBuilder, level + 1);
         }
+
+        childBuilder.build();
       }
     }
   }
