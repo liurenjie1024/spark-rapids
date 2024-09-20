@@ -271,7 +271,7 @@ class KudoShuffleCoalesceIterator(
   private[this] var numRowsInBatch: Int = 0
   private[this] var batchByteSize: Long = 0L
 
-  private val cudfSchema = GpuColumnVector.from(sparkSchema)
+  private val cudfSchema = GpuColumnVector.from(sparkSchema.fields.map(_.dataType))
 
 
   // Don't install the callback if in a unit test
