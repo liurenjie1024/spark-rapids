@@ -1735,7 +1735,7 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .stringConf
     .transform(_.toUpperCase(java.util.Locale.ROOT))
     .checkValues(VeloxFilterPushdownType.values.map(_.toString))
-    .createWithDefault(VeloxFilterPushdownType.ALL_SUPPORTED.toString)
+    .createWithDefault(VeloxFilterPushdownType.UNCHANGED.toString)
 
 
   val ENABLE_NATIVE_VELOX_CONVERTER = conf("spark.rapids.sql.enableNativeVeloxConverter")
