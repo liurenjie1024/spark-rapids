@@ -302,16 +302,88 @@ _init_list_with_decimalbig = _init_list + [
     _grpkey_short_very_big_neg_scale_decimals]
 
 
+_repeat_agg_column_for_collect_op = [
+    RepeatSeqGen(BooleanGen(), length=15),
+    RepeatSeqGen(IntegerGen(), length=15),
+    RepeatSeqGen(LongGen(), length=15),
+    RepeatSeqGen(ShortGen(), length=15),
+    RepeatSeqGen(DateGen(), length=15),
+    RepeatSeqGen(TimestampGen(), length=15),
+    RepeatSeqGen(ByteGen(), length=15),
+    RepeatSeqGen(StringGen(), length=15),
+    RepeatSeqGen(FloatGen(), length=15),
+    RepeatSeqGen(DoubleGen(), length=15),
+    RepeatSeqGen(DecimalGen(precision=8, scale=3), length=15),
+    # case to verify the NAN_UNEQUAL strategy
+    RepeatSeqGen(FloatGen().with_special_case(math.nan, 200.0), length=5),
+]
+
+_full_repeat_agg_column_for_collect_op = [
+    RepeatSeqGen(_decimal_gen_38_10, length=15)
+]
+
+_gen_data_for_collect_op = [[
+    ('a', RepeatSeqGen(LongGen(), length=20)),
+    ('b', value_gen),
+    ('c', UniqueLongGen())] for value_gen in _repeat_agg_column_for_collect_op]
+
+_full_gen_data_for_collect_op = _gen_data_for_collect_op + [[
+    ('a', RepeatSeqGen(LongGen(), length=20)),
+    ('b', value_gen),
+    ('c', UniqueLongGen())] for value_gen in _full_repeat_agg_column_for_collect_op]
+
+_repeat_agg_column_for_collect_list_op = [
+    RepeatSeqGen(ArrayGen(int_gen), length=15),
+    RepeatSeqGen(all_basic_struct_gen, length=15),
+    RepeatSeqGen(StructGen([['c0', all_basic_struct_gen]]), length=15)]
+
+_gen_data_for_collect_list_op = _full_gen_data_for_collect_op + [[
+    ('a', RepeatSeqGen(LongGen(), length=20)),
+    ('b', value_gen)] for value_gen in _repeat_agg_column_for_collect_list_op]
+
+_repeat_agg_column_for_collect_set_op = [
+    RepeatSeqGen(all_basic_struct_gen, length=15),
+    RepeatSeqGen(StructGen([
+        ['c0', all_basic_struct_gen], ['c1', int_gen]]), length=15)]
+
+# data generating for collect_set based-nested Struct[Array] types
+_repeat_agg_column_for_collect_set_op_nested = [
+    RepeatSeqGen(struct_array_gen, length=15),
+    RepeatSeqGen(StructGen([
+        ['c0', struct_array_gen], ['c1', int_gen]]), length=15),
+    RepeatSeqGen(ArrayGen(all_basic_struct_gen), length=15)]
+
+_array_of_array_gen = [RepeatSeqGen(ArrayGen(sub_gen), length=15) for sub_gen in single_level_array_gens]
+
+_gen_data_for_collect_set_op = [[
+    ('a', RepeatSeqGen(LongGen(), length=20)),
+    ('b', value_gen)] for value_gen in _repeat_agg_column_for_collect_set_op]
+
+_gen_data_for_collect_set_op_nested = [[
+    ('a', RepeatSeqGen(LongGen(), length=20)),
+    ('b', value_gen)] for value_gen in _repeat_agg_column_for_collect_set_op_nested + _array_of_array_gen]
+
+_all_basic_gens_with_all_nans_cases = all_basic_gens + [SetValuesGen(t, [math.nan, None]) for t in [FloatType(), DoubleType()]]
 
 
-@approximate_float
-@ignore_order
-@disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
-@incompat
-@pytest.mark.parametrize('data_gen', [_longs_with_nulls], ids=idfn)
-@pytest.mark.parametrize('conf', [_float_conf], ids=idfn)
-def test_hash_grpby_avg(data_gen, conf):
+
+# To avoid ordering issues with collect_list, sorting the arrays that are returned.
+# NOTE: sorting the arrays locally, because sort_array() does not yet
+# support sorting certain nested/arbitrary types on the GPU
+# See https://github.com/NVIDIA/spark-rapids/issues/3715
+# and https://github.com/rapidsai/cudf/issues/11222
+@allow_non_gpu("ProjectExec", *non_utc_allow)
+@ignore_order(local=True, arrays=["blist"])
+@pytest.mark.parametrize('data_gen', [[
+    ('a', RepeatSeqGen(LongGen(), length=20)),
+    ('b', RepeatSeqGen(ArrayGen(int_gen), length=15)),
+    ('c', UniqueLongGen())]], ids=idfn)
+@pytest.mark.parametrize('use_obj_hash_agg', [True], ids=idfn)
+def test_hash_groupby_collect_list(data_gen, use_obj_hash_agg):
+    def doit(spark):
+        return gen_df(spark, data_gen, length=100) \
+            .groupby('a') \
+            .agg(f.collect_list('b').alias("blist"))
     assert_gpu_and_cpu_are_equal_collect(
-        lambda spark: gen_df(spark, data_gen, length=20).groupby('a').agg(f.avg('b')),
-        conf=conf
-    )
+        doit,
+        conf={'spark.sql.execution.useObjectHashAggregateExec': str(use_obj_hash_agg).lower()})
