@@ -26,9 +26,8 @@ import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
 import java.util
-import org.apache.spark.TaskContext
 
-import org.apache.spark.internal.Logging
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -363,14 +362,14 @@ class KudoShuffleCoalesceIterator(
         }
         val batch = concatenateTables()
 
-        {
-          val taskContext = TaskContext.get()
-          if (taskContext != null) {
-            val name = s"shuffle_coalesce_result, stage_id=${taskContext.stageId()}, " +
-              s"partition_id=${taskContext.partitionId()}"
-            GpuColumnVector.debug(name, batch)
-          }
-        }
+//        {
+//          val taskContext = TaskContext.get()
+//          if (taskContext != null) {
+//            val name = s"shuffle_coalesce_result, stage_id=${taskContext.stageId()}, " +
+//              s"partition_id=${taskContext.partitionId()}"
+//            GpuColumnVector.debug(name, batch)
+//          }
+//        }
         outputBatchesMetric += 1
         outputRowsMetric += batch.numRows()
         batch

@@ -31,7 +31,6 @@ import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 
 import org.apache.spark.TaskContext
-import org.apache.spark.internal.Logging
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
 import org.apache.spark.sql.types.NullType
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -238,24 +237,24 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
             }
           }
 
-          {
-            val taskContext = TaskContext.get()
-            if (taskContext != null) {
-              val info = s"shuffle_data_for_task, stage_id: ${taskContext.stageId()}, partition " +
-                s"id: ${taskContext.partitionId()}, attempt number: ${taskContext.attemptNumber()}"
-
-              val columnsStr = columns.zipWithIndex.map({
-                case (col, col_idx) =>
-                  val data = (startRow until (startRow + batch.numRows()))
-                    .map(col.getElement(_))
-                    .map(e => Option(e).map(_.toString).getOrElse("null"))
-                    .mkString("[", "|", "]")
-                  s"Column $col_idx: ${col.getType}, null count: ${col.getNullCount}, data: $data"
-              }).mkString("\n")
-
-              System.err.println(s"DEBUG $info\n$columnsStr")
-            }
-          }
+//          {
+//            val taskContext = TaskContext.get()
+//            if (taskContext != null) {
+//              val info = s"shuffle_data_for_task, stage_id: ${taskContext.stageId()}, partition " +
+//                s"id: ${taskContext.partitionId()}, attempt number: ${taskContext.attemptNumber()}"
+//
+//              val columnsStr = columns.zipWithIndex.map({
+//                case (col, col_idx) =>
+//                  val data = (startRow until (startRow + batch.numRows()))
+//                    .map(col.getElement(_))
+//                    .map(e => Option(e).map(_.toString).getOrElse("null"))
+//                    .mkString("[", "|", "]")
+//                  s"Column $col_idx: ${col.getType}, data: $data"
+//              }).mkString("\n")
+//
+//              System.err.println(s"DEBUG $info\n$columnsStr")
+//            }
+//          }
 
 
           if (kudoOpt.isDefined) {
