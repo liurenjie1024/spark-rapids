@@ -273,6 +273,11 @@ class KudoShuffleCoalesceIterator(
 
   private val cudfSchema = GpuColumnVector.from(dataTypes)
 
+  {
+    System.err.println(s"Spark schema: ${dataTypes.mkString("Spark(", ", ", ")")}, cudf " +
+      s"schema: $cudfSchema")
+  }
+
 
   // Don't install the callback if in a unit test
   Option(TaskContext.get()).foreach { tc =>
