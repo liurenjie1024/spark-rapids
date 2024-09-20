@@ -76,7 +76,7 @@ case class GpuShuffleCoalesceExec(child: SparkPlan, targetBatchByteSize: Long)
     child.executeColumnar().mapPartitions { iter =>
       if (kudoOpt.isDefined) {
         new KudoShuffleCoalesceIterator(iter, targetSize, metricsMap, kudoOpt.get.serializer(),
-          schema)
+          dataTypes)
       } else {
         new GpuShuffleCoalesceIterator(
           new HostShuffleCoalesceIterator(iter, targetSize, metricsMap),
@@ -258,7 +258,7 @@ class KudoShuffleCoalesceIterator(
     targetBatchByteSize: Long,
     metricsMap: Map[String, GpuMetric],
     kudo: TableSerializer,
-    sparkSchema: StructType)
+    dataTypes: Array[DataType])
   extends Iterator[ColumnarBatch] with AutoCloseable {
   private[this] val concatTimeMetric = metricsMap(GpuMetric.CONCAT_TIME)
   private[this] val inputBatchesMetric = metricsMap(GpuMetric.NUM_INPUT_BATCHES)
@@ -271,7 +271,7 @@ class KudoShuffleCoalesceIterator(
   private[this] var numRowsInBatch: Int = 0
   private[this] var batchByteSize: Long = 0L
 
-  private val cudfSchema = GpuColumnVector.from(sparkSchema.fields.map(_.dataType))
+  private val cudfSchema = GpuColumnVector.from(dataTypes)
 
 
   // Don't install the callback if in a unit test
