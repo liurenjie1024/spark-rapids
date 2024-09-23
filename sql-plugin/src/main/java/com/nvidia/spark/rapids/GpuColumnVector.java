@@ -537,6 +537,9 @@ public class GpuColumnVector extends GpuColumnVectorBase {
         MapType mt = (MapType) dt;
         DataType[] structChildren = {mt.keyType(), mt.valueType()};
         visit(structChildren, structBuilder, level + 1);
+      } else if (dt instanceof BinaryType) {
+        Schema.Builder listBuilder = builder.addColumn(DType.LIST, name);
+        listBuilder.addColumn(DType.UINT8, name + "_bytes");
       } else {
         Schema.Builder childBuilder = builder.addColumn(GpuColumnVector.getRapidsType(dt), name);
         if (dt instanceof ArrayType) {
