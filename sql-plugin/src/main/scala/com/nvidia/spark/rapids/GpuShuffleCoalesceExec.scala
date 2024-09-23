@@ -361,10 +361,8 @@ class KudoShuffleCoalesceReader(
 
       c match {
         case HostColumns(hostMergeResult) =>
-          withResource(hostMergeResult) { _ =>
-            withResource(hostMergeResult.toContiguousTable(cudfSchema)) { ct =>
-              GpuColumnVectorFromBuffer.from(ct, dataTypes)
-            }
+          withResource(hostMergeResult.toContiguousTable(cudfSchema)) { ct =>
+            GpuColumnVectorFromBuffer.from(ct, dataTypes)
           }
         case RowsOnly(rows) => new ColumnarBatch(Array.empty, rows)
       }
