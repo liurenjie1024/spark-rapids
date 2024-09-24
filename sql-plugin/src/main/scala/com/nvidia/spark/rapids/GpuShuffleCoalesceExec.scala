@@ -157,6 +157,7 @@ abstract class GpuShuffleCoalesceReaderBase[T <: AutoCloseable: ClassTag, C <: A
   private[this] val inputRowsMetric = metricsMap(GpuMetric.NUM_INPUT_ROWS)
   private[this] val outputBatchesMetric = metricsMap(GpuMetric.NUM_OUTPUT_BATCHES)
   private[this] val outputRowsMetric = metricsMap(GpuMetric.NUM_OUTPUT_ROWS)
+  private[this] val splitRetriesMetric = metricsMap(GpuMetric.NUM_SPLIT_RETRY)
 
   private[this] val serializedTables = new mutable.Queue[T]
   private[this] var realBatchSize = math.max(targetBatchSize, 1)
@@ -220,6 +221,7 @@ abstract class GpuShuffleCoalesceReaderBase[T <: AutoCloseable: ClassTag, C <: A
       // Remember the size for the following caching and collecting.
       println(s"=>Update target batch size from $realBatchSize to ${halfSize.head.targetSize}")
       realBatchSize = halfSize.head.targetSize
+      splitRetriesMetric += 1
       halfSize
     }
 
@@ -341,8 +343,7 @@ class KudoShuffleCoalesceReader(
     override def getNumRows(table: KudoSerializedTableColumn): Int =
       table.inner.getHeader.getNumRows
 
-    override def concatOnHost(tables: Array[KudoSerializedTableColumn]): MergeResult
-    = {
+    override def concatOnHost(tables: Array[KudoSerializedTableColumn]): MergeResult = {
       assert(tables.nonEmpty, "no tables to be concatenated")
       val numCols = tables.head.inner.getHeader.getNumColumns
       if (numCols == 0) {
@@ -354,10 +355,8 @@ class KudoShuffleCoalesceReader(
     }
 
     override def toGpu(c: MergeResult, dataTypes: Array[DataType]): ColumnarBatch = {
-      // It is a WAR to require GPU here because host concatenation is supported yet,
-      // so we return a GPU batch.
+      // Begin to use GPU
       GpuSemaphore.acquireIfNecessary(TaskContext.get())
-
       c match {
         case HostColumns(cols) =>
           withResource(cols) { _ =>
