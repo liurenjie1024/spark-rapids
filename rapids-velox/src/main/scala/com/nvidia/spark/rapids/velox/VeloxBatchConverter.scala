@@ -279,7 +279,7 @@ object VeloxBatchConverter extends Logging {
     val alignment = "****"
     val builder = mutable.StringBuilder.newBuilder
     builder.append(s"pre-convert time ${metrics(1) / 1000}ms\n")
-      .append(s"vector decode time ${metrics(2) / 1000}ms\n")
+      .append(s"char count time ${metrics(2) / 1000}ms\n")
     var offset = 3
 
     val stack = mutable.Stack[(StructField, Int)]()

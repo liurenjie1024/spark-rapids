@@ -25,16 +25,17 @@ spark-rapids-shim-json-lines ***/
 package com.nvidia.spark.rapids.shims
 
 import com.nvidia.spark.rapids._
-
 import org.apache.spark.rapids.velox.VeloxFileSourceScanExec
-import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
+
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, InMemoryFileIndex}
 
 class VeloxFileSourceScanExecMeta(plan: FileSourceScanExec,
                                   conf: RapidsConf,
                                   parent: Option[RapidsMeta[_, _, _]],
-                                  rule: DataFromReplacementRule)
+                                  rule: DataFromReplacementRule,
+                                  pushedFilterSchema: Option[Seq[Attribute]] = None)
   extends SparkPlanMeta[FileSourceScanExec](plan, conf, parent, rule) {
 
   // Replaces SubqueryBroadcastExec inside dynamic pruning filters with GPU counterpart
@@ -129,6 +130,7 @@ class VeloxFileSourceScanExecMeta(plan: FileSourceScanExec,
       wrapped.tableIdentifier,
       wrapped.disableBucketedScan,
       queryUsesInputFile = false,
-      None)(conf)
+      None,
+      filteredOutput = pushedFilterSchema)(conf)
   }
 }

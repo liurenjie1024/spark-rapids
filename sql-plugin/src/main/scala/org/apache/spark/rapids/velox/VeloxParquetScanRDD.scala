@@ -16,15 +16,14 @@
 
 package org.apache.spark.rapids.velox
 
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.locks.ReentrantLock
 
 import io.glutenproject.execution._
 import io.substrait.proto.Plan
 
 import ai.rapids.cudf.{HostColumnVector, NvtxColor}
-import com.nvidia.spark.rapids.{CoalesceSizeGoal, GpuMetric, NvtxWithMetrics}
+import com.nvidia.spark.rapids.{CoalesceSizeGoal, GpuMetric, GpuSemaphore, NvtxWithMetrics}
 import com.nvidia.spark.rapids.Arm.withResource
 
 import org.apache.spark.{InterruptibleIterator, Partition, TaskContext}
@@ -153,29 +152,25 @@ private class VeloxScanMetricsIter(iter: Iterator[ColumnarBatch],
 private case class PreloadedIterator(taskAttId: Long,
                                      iterImpl: Iterator[Array[HostColumnVector]],
                                      producerInitFn: () => Unit,
-                                     preloadedCapacity: Int,
+                                     capacity: Int,
                                      waitTimeMetric: GpuMetric
                                     ) extends Iterator[Array[HostColumnVector]] with Logging {
 
-  private var consumedNum: Int = 0
-  private var producedNum: Int = 0
-
-  /**
-   * Status code of the async Producer:
-   * 0: uninitialized
-   * 1: running
-   * 2: finished
-   */
-  @transient private lazy val producerStatus = new AtomicInteger(0)
-
+  @transient @volatile private var isInit: Boolean = false
+  @transient @volatile private var isProducing: Boolean = false
+  @transient @volatile private var readIndex: Int = 0
+  @transient @volatile private var writeIndex: Int = 0
   // This lock guarantees anytime if ProducerStatus == running there must be a working batch
   // being produced or waiting to be put into the queue.
-  @transient private lazy val lock = new ReentrantLock()
+  @transient private lazy val hasNextLock = new ReentrantLock()
+
+  @transient private lazy val emptyLock = new ReentrantLock()
+  @transient private lazy val fullLock = new ReentrantLock()
 
   private var producer: Thread = _
 
-  @transient private lazy val preloadedBatches = {
-    new LinkedBlockingQueue[Either[Throwable, Array[HostColumnVector]]](preloadedCapacity)
+  @transient private lazy val buffer: Array[Either[Throwable, Array[HostColumnVector]]] = {
+    Array.ofDim[Either[Throwable, Array[HostColumnVector]]](capacity)
   }
 
   @transient private lazy val produceFn: Runnable = new Runnable {
@@ -185,32 +180,41 @@ private case class PreloadedIterator(taskAttId: Long,
 
     override def run(): Unit = {
       TrampolineUtil.setTaskContext(taskContext)
+      hasNextLock.lock()
       try {
-        var firstTime = true
-
         do {
-          if (firstTime) {
-            firstTime = false
-          } else {
-            lock.unlock()
+          isProducing = true
+          hasNextLock.unlock()
+
+          do {
+            fullLock.synchronized {
+              if (writeIndex - readIndex == capacity) {
+                fullLock.wait()
+              }
+            }
+          } while (writeIndex - readIndex == capacity)
+
+          buffer(writeIndex % capacity) = Right(iterImpl.next())
+          emptyLock.synchronized {
+            writeIndex += 1
+            emptyLock.notify()
           }
-          val nextBatch = iterImpl.next()
-          lock.lock()
-          producedNum += 1
-          logInfo(s"[$taskAttId] PreloadedIterator produced $producedNum batches, currently " +
-            s"preloaded batchNum: ${preloadedBatches.size() + 1}")
-          preloadedBatches.put(Right(nextBatch))
+
+          hasNextLock.lock()
+          isProducing = false
+          logError(s"[$taskAttId] PreloadedIterator produced $writeIndex batches, " +
+            s"currently preloaded batchNum: ${writeIndex - readIndex}")
         }
         while (iterImpl.hasNext)
-
-        require(producerStatus.incrementAndGet() == 2)
-        lock.unlock()
+        hasNextLock.unlock()
       } catch {
         case ex: Throwable =>
           // transfer the exception info to the main thread as an interrupted signal
-          preloadedBatches.put(Left(ex))
-          if (lock.isHeldByCurrentThread) {
-            lock.unlock()
+          buffer(writeIndex % capacity) = Left(ex)
+          writeIndex += 1
+          isProducing = false
+          if (hasNextLock.isHeldByCurrentThread) {
+            hasNextLock.unlock()
           }
           throw new RuntimeException(ex)
       } finally {
@@ -220,39 +224,51 @@ private case class PreloadedIterator(taskAttId: Long,
   }
 
   override def hasNext: Boolean = {
-    if (producerStatus.get() == 0) {
+    if (!isInit) {
       if (!iterImpl.hasNext) {
-        producerStatus.getAndSet(2)
         return false
       }
+      isInit = true
+      isProducing = true
       producerInitFn()
-      producerStatus.incrementAndGet()
       producer = new Thread(produceFn)
       producer.start()
+      return true
     }
 
-    !preloadedBatches.isEmpty || {
-      lock.lock()
-      val ret = producerStatus.get() == 1
-      lock.unlock()
+    writeIndex > readIndex || {
+      hasNextLock.lock()
+      val ret = writeIndex > readIndex || isProducing
+      hasNextLock.unlock()
       ret
     }
   }
 
   override def next(): Array[HostColumnVector] = {
-    var ret = preloadedBatches.poll()
-    if (ret == null) {
+    if (writeIndex == readIndex) {
+      GpuSemaphore.releaseIfNecessary(TaskContext.get())
       withResource(new NvtxWithMetrics("waitForCPU", NvtxColor.RED, waitTimeMetric)) { _ =>
-        ret = preloadedBatches.take()
+        do {
+          emptyLock.synchronized {
+            if (writeIndex == readIndex) {
+              emptyLock.wait()
+            }
+          }
+        } while (writeIndex == readIndex)
       }
+    }
+    val ret = buffer(readIndex % capacity)
+    fullLock.synchronized {
+      readIndex += 1
+      fullLock.notify()
     }
     ret match {
       case Left(ex: Throwable) =>
         logError(s"[$taskAttId] PreloadedIterator: AsyncProducer failed with exceptions")
         throw new RuntimeException(s"[$taskAttId] PreloadedIterator", ex)
       case Right(ret: Array[HostColumnVector]) =>
-        consumedNum += 1
-        logInfo(s"[$taskAttId] PreloadedIterator consumed $consumedNum batches")
+        logError(s"[$taskAttId] PreloadedIterator consumed $readIndex batches, " +
+          s"currently preloaded batchNum: ${writeIndex - readIndex}")
         ret
     }
   }
