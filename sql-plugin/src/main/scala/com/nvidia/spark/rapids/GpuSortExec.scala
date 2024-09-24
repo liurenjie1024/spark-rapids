@@ -133,12 +133,13 @@ case class GpuSortExec(
     val opTime = gpuLongMetric(OP_TIME)
     val outputBatch = gpuLongMetric(NUM_OUTPUT_BATCHES)
     val outputRows = gpuLongMetric(NUM_OUTPUT_ROWS)
+    val splitRetriesMetric = gpuLongMetric(GpuMetric.NUM_SPLIT_RETRY)
     val outOfCore = sortType == OutOfCoreSort
     val singleBatch = sortType == FullSortSingleBatch
     child.executeColumnar().mapPartitions { cbIter =>
       if (outOfCore) {
         val iter = GpuOutOfCoreSortIterator(cbIter, sorter,
-          targetSize, opTime, sortTime, outputBatch, outputRows)
+          targetSize, opTime, sortTime, outputBatch, outputRows, splitRetriesMetric)
         onTaskCompletion(iter.close())
         iter
       } else {
@@ -286,8 +287,9 @@ case class GpuOutOfCoreSortIterator(
     opTime: GpuMetric,
     sortTime: GpuMetric,
     outputBatches: GpuMetric,
-    outputRows: GpuMetric) extends Iterator[ColumnarBatch]
-    with AutoCloseable with Logging {
+    outputRows: GpuMetric,
+    numSplitRetries: GpuMetric = NoopMetric)
+  extends Iterator[ColumnarBatch] with AutoCloseable with Logging {
 
   /**
    * This has already sorted the data, and it still has the projected columns in it that need to
@@ -482,6 +484,7 @@ case class GpuOutOfCoreSortIterator(
     logInfo(s"$name: change the target batch size from $realBatchSize to" +
       s" ${halfSize.head.targetSize}")
     realBatchSize = halfSize.head.targetSize
+    numSplitRetries += 1
     halfSize
   }
 
