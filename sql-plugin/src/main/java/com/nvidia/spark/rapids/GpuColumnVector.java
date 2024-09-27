@@ -532,13 +532,16 @@ public class GpuColumnVector extends GpuColumnVectorBase {
       String name = "_col_" + level + "_" + idx;
       if (dt instanceof MapType) {
         // MapType is list of struct in cudf, so need to handle it specially.
-        Schema.Builder listBuilder = builder.column(DType.LIST, name);
-        Schema.Builder structBuilder = listBuilder.column(DType.STRUCT, name + "_map");
+        Schema.Builder listBuilder = builder.addColumn(DType.LIST, name);
+        Schema.Builder structBuilder = listBuilder.addColumn(DType.STRUCT, name + "_map");
         MapType mt = (MapType) dt;
         DataType[] structChildren = {mt.keyType(), mt.valueType()};
         visit(structChildren, structBuilder, level + 1);
+      } else if (dt instanceof BinaryType) {
+        Schema.Builder listBuilder = builder.addColumn(DType.LIST, name);
+        listBuilder.addColumn(DType.UINT8, name + "_bytes");
       } else {
-        Schema.Builder childBuilder = builder.column(GpuColumnVector.getRapidsType(dt), name);
+        Schema.Builder childBuilder = builder.addColumn(GpuColumnVector.getRapidsType(dt), name);
         if (dt instanceof ArrayType) {
           // Array (aka List)
           DataType[] childType = {((ArrayType) dt).elementType()};
