@@ -24,10 +24,10 @@ import scala.reflect.ClassTag
 
 import ai.rapids.cudf.{HostColumnVector, HostMemoryBuffer, JCudfSerialization, NvtxColor, NvtxRange}
 import ai.rapids.cudf.JCudfSerialization.SerializedTableHeader
-import ai.rapids.cudf.serde.TableSerializer
-import ai.rapids.cudf.serde.kudo.SerializedTable
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
+import com.nvidia.spark.rapids.shuffle.TableSerializer
+import com.nvidia.spark.rapids.shuffle.kudo.SerializedTable
 
 import org.apache.spark.TaskContext
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
@@ -168,7 +168,8 @@ class KudoSerializedTableColumn(val inner: SerializedTable) extends
 
   override def numNulls(): Int = throw new IllegalStateException("Should not be called!")
 
-  def toColumnarBatch: ColumnarBatch = new ColumnarBatch(Array(this), inner.getHeader.getNumRows)
+  def toColumnarBatch: ColumnarBatch = new ColumnarBatch(Array(this),
+    inner.getHeader.getNumRows.toInt)
 }
 
 

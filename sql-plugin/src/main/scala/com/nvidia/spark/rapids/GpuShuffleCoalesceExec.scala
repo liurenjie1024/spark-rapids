@@ -23,15 +23,15 @@ import scala.collection.convert.ImplicitConversions._
 import scala.collection.mutable
 import scala.reflect.ClassTag
 
-import ai.rapids.cudf.{HostColumnVector, HostMemoryBuffer, JCudfSerialization, NvtxColor, NvtxRange}
+import ai.rapids.cudf.{HostMemoryBuffer, JCudfSerialization, NvtxColor, NvtxRange}
 import ai.rapids.cudf.JCudfSerialization.{HostConcatResult, SerializedTableHeader}
-import ai.rapids.cudf.serde.TableSerializer
-import ai.rapids.cudf.serde.kudo.SerializedTable
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits.{AutoCloseableProducingSeq, AutoCloseableSeq}
 import com.nvidia.spark.rapids.RmmRapidsRetryIterator.{splitTargetSizeInHalfGpu, withRetry}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
+import com.nvidia.spark.rapids.shuffle.TableSerializer
+import com.nvidia.spark.rapids.shuffle.kudo.{HostMergeResult, SerializedTable}
 
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
@@ -315,8 +315,8 @@ class GpuShuffleCoalesceReader(
 
 sealed trait MergeResult extends AutoCloseable
 
-case class HostColumns(cols: util.List[HostColumnVector]) extends MergeResult {
-  override def close(): Unit = withResource(cols) { _ => }
+case class HostColumns(hostMergeResult: HostMergeResult) extends MergeResult {
+  override def close(): Unit = withResource(hostMergeResult) { _ => }
 }
 
 case class RowsOnly(numRows: Int) extends MergeResult {
@@ -341,7 +341,7 @@ class KudoShuffleCoalesceReader(
       table.inner.getHeader.getTotalDataLen
 
     override def getNumRows(table: KudoSerializedTableColumn): Int =
-      table.inner.getHeader.getNumRows
+      table.inner.getHeader.getNumRows.toInt
 
     override def concatOnHost(tables: Array[KudoSerializedTableColumn]): MergeResult = {
       assert(tables.nonEmpty, "no tables to be concatenated")
@@ -350,17 +350,16 @@ class KudoShuffleCoalesceReader(
         val totalRowsNum = tables.map(getNumRows).sum
         RowsOnly(totalRowsNum)
       } else {
-        HostColumns(kudoSer.mergeToHost(tables.map(_.inner).toList, cudfSchema))
+        HostColumns(kudoSer.mergeToHost(tables.map(_.inner).toList, cudfSchema)
+          .asInstanceOf[HostMergeResult])
       }
     }
 
     override def toGpu(c: MergeResult, dataTypes: Array[DataType]): ColumnarBatch = {
-      // Begin to use GPU
-      GpuSemaphore.acquireIfNecessary(TaskContext.get())
       c match {
-        case HostColumns(cols) =>
-          withResource(cols) { _ =>
-            GpuColumnVector.from(HostColumnVector.toTable(cols) , dataTypes)
+        case HostColumns(hostMergeResult) =>
+          withResource(hostMergeResult.toContiguousTable(cudfSchema)) { ct =>
+            GpuColumnVectorFromBuffer.from(ct, dataTypes)
           }
         case RowsOnly(rows) => new ColumnarBatch(Array.empty, rows)
       }
@@ -582,7 +581,7 @@ class KudoShuffleCoalesceIterator(
         serializedTables.addAll(right)
 
         withResource(kudo.mergeTable(left.toList, cudfSchema)) { cudfTable =>
-          GpuColumnVector.from(cudfTable, dataTypes)
+          GpuColumnVectorFromBuffer.from(cudfTable, dataTypes)
         }
       }
     }
@@ -597,7 +596,7 @@ class KudoShuffleCoalesceIterator(
         "should only track at most one buffer that is not in a batch")
       val header = serializedTables.peekFirst().getHeader
       batchByteSize = header.getTotalDataLen
-      numRowsInBatch = header.getNumRows
+      numRowsInBatch = header.getNumRows.toInt
     }
 
     result
@@ -618,7 +617,7 @@ class KudoShuffleCoalesceIterator(
             // always add the first table to the batch even if its beyond the target limits
             if (batchCanGrow || numTablesInBatch == 0) {
               numTablesInBatch += 1
-              numRowsInBatch += tableColumn.getHeader.getNumRows
+              numRowsInBatch += tableColumn.getHeader.getNumRows.toInt
               batchByteSize += tableColumn.getHeader.getTotalDataLen
             }
           } else {
