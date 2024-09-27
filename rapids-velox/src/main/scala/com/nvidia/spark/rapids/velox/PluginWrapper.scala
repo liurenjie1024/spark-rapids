@@ -54,6 +54,7 @@ class DriverPluginWrapper(wrapped: DriverPlugin)
         .mkString(",")
     )
     conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "false")
+
     ret
   }
 
@@ -76,6 +77,13 @@ class ExecutorPluginWrapper(wrapped: ExecutorPlugin)
       wrapped.init(ctx, extraConf)
       conf.set(GlutenConfig.GLUTEN_ENABLE_KEY, "false")
     }
+
+    val veloxConf = conf.getAll.toIterator
+      .filter(_._1.startsWith(PluginWrapper.RAPIDS_VELOX_CONF_PREFIX))
+      .map { case (k, v) =>
+        k.substring(PluginWrapper.RAPIDS_VELOX_CONF_PREFIX.length) -> v
+      }.toMap
+    VeloxBackendApis.init(veloxConf)
   }
 
   override def shutdown(): Unit = {
@@ -98,4 +106,5 @@ class ExecutorPluginWrapper(wrapped: ExecutorPlugin)
 object PluginWrapper {
   private[velox] val GLUTEN_SESSION_EXTENSION_NAME = "io.glutenproject.GlutenSessionExtensions"
   private[velox] val LOAD_VELOX_KEY = "spark.rapids.sql.loadVelox"
+  private[velox] val RAPIDS_VELOX_CONF_PREFIX = "spark.rapids.sql.velox."
 }
