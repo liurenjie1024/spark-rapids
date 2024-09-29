@@ -6,7 +6,7 @@ public class SerializedTable implements AutoCloseable {
     private final SerializedTableHeader header;
     private final HostMemoryBuffer buffer;
 
-    SerializedTable(SerializedTableHeader header, HostMemoryBuffer buffer) {
+    public SerializedTable(SerializedTableHeader header, HostMemoryBuffer buffer) {
         this.header = header;
         this.buffer = buffer;
     }

@@ -27,7 +27,7 @@ import ai.rapids.cudf.JCudfSerialization.SerializedTableHeader
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.shuffle.TableSerializer
-import com.nvidia.spark.rapids.shuffle.kudo.SerializedTable
+import com.nvidia.spark.rapids.shuffle.kudo.{SerializedTable, SerializedTableHeader => KudoTableHeader}
 
 import org.apache.spark.TaskContext
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
@@ -170,6 +170,12 @@ class KudoSerializedTableColumn(val inner: SerializedTable) extends
 
   def toColumnarBatch: ColumnarBatch = new ColumnarBatch(Array(this),
     inner.getHeader.getNumRows.toInt)
+}
+
+object KudoSerializedTableColumn {
+  def apply(header: KudoTableHeader, hmb: HostMemoryBuffer): KudoSerializedTableColumn = {
+    new KudoSerializedTableColumn(new SerializedTable(header, hmb))
+  }
 }
 
 
