@@ -1,7 +1,6 @@
 package com.nvidia.spark.rapids
 
 import com.nvidia.spark.rapids.RapidsConf.conf
-import com.nvidia.spark.rapids.shuffle.TableSerializer
 import com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer
 
 import org.apache.spark.internal.Logging
@@ -28,5 +27,5 @@ object Kudo extends Logging {
 }
 
 case class KudoConf() {
-  def serializer(): TableSerializer = new KudoSerializer()
+  def serializer(): KudoSerializer = new KudoSerializer()
 }

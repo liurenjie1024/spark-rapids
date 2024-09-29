@@ -87,6 +87,9 @@ object GpuMetric extends Logging {
   val FILECACHE_DATA_RANGE_READ_TIME = "filecacheDataRangeReadTime"
   val DELETION_VECTOR_SCATTER_TIME = "deletionVectorScatterTime"
   val DELETION_VECTOR_SIZE = "deletionVectorSize"
+  val CONCAT_MERGE_HEADER_TIME = "concatMergeHeaderTime"
+  val CONCAT_MERGE_BUFFER_TIME = "concatMergeBufferTime"
+  val CONCAT_COPY_TO_GPU_TIME = "concatCopyToGpuTime"
 
   // Metric Descriptions.
   val DESCRIPTION_BUFFER_TIME = "buffer time"
@@ -123,6 +126,9 @@ object GpuMetric extends Logging {
   val DESCRIPTION_FILECACHE_DATA_RANGE_READ_TIME = "cached data read time"
   val DESCRIPTION_DELETION_VECTOR_SCATTER_TIME = "deletion vector scatter time"
   val DESCRIPTION_DELETION_VECTOR_SIZE = "deletion vector size"
+  val DESCRIPTION_CONCAT_MERGE_HEADER_TIME = "merge header time in concatenating batches"
+  val DESCRIPTION_CONCAT_MERGE_BUFFER_TIME = "merge buffer time in concatenating batches"
+  val DESCRIPTION_CONCAT_COPY_TO_GPU_TIME = "copy to GPU time in concatenating batches"
 
   def unwrap(input: GpuMetric): SQLMetric = input match {
     case w :WrappedGpuMetric => w.sqlMetric

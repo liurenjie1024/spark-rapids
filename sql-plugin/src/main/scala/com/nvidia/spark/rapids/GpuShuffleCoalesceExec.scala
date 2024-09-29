@@ -21,13 +21,13 @@ import scala.collection.convert.ImplicitConversions._
 import ai.rapids.cudf.{HostMemoryBuffer, JCudfSerialization, NvtxColor, NvtxRange}
 import ai.rapids.cudf.JCudfSerialization.{HostConcatResult, SerializedTableHeader}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
+import com.nvidia.spark.rapids.GpuMetric.{CONCAT_COPY_TO_GPU_TIME, CONCAT_MERGE_BUFFER_TIME, CONCAT_MERGE_HEADER_TIME}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
-import com.nvidia.spark.rapids.shuffle.TableSerializer
-import com.nvidia.spark.rapids.shuffle.kudo.SerializedTable
+import com.nvidia.spark.rapids.shuffle.kudo.{KudoSerializer, SerializedTable}
 import java.util
-import org.apache.spark.TaskContext
 
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
@@ -53,7 +53,13 @@ case class GpuShuffleCoalesceExec(child: SparkPlan, targetBatchByteSize: Long)
     OP_TIME -> createNanoTimingMetric(MODERATE_LEVEL, DESCRIPTION_OP_TIME),
     NUM_INPUT_ROWS -> createMetric(DEBUG_LEVEL, DESCRIPTION_NUM_INPUT_ROWS),
     NUM_INPUT_BATCHES -> createMetric(DEBUG_LEVEL, DESCRIPTION_NUM_INPUT_BATCHES),
-    CONCAT_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_CONCAT_TIME)
+    CONCAT_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_CONCAT_TIME),
+    CONCAT_MERGE_HEADER_TIME -> createNanoTimingMetric(DEBUG_LEVEL,
+      DESCRIPTION_CONCAT_MERGE_HEADER_TIME),
+    CONCAT_MERGE_BUFFER_TIME -> createNanoTimingMetric(DEBUG_LEVEL,
+      DESCRIPTION_CONCAT_MERGE_BUFFER_TIME),
+    CONCAT_COPY_TO_GPU_TIME -> createNanoTimingMetric(DEBUG_LEVEL,
+      DESCRIPTION_CONCAT_COPY_TO_GPU_TIME)
   )
 
   override protected val outputBatchesLevel = MODERATE_LEVEL
@@ -257,10 +263,13 @@ class KudoShuffleCoalesceIterator(
     iter: Iterator[ColumnarBatch],
     targetBatchByteSize: Long,
     metricsMap: Map[String, GpuMetric],
-    kudo: TableSerializer,
+    kudo: KudoSerializer,
     dataTypes: Array[DataType])
   extends Iterator[ColumnarBatch] with AutoCloseable {
   private[this] val concatTimeMetric = metricsMap(GpuMetric.CONCAT_TIME)
+  private[this] val concatMergeHeaderTimeMetric = metricsMap(CONCAT_MERGE_HEADER_TIME)
+  private[this] val concatMergeBufferTimeMetric = metricsMap(CONCAT_MERGE_BUFFER_TIME)
+  private[this] val concatCopyToGpuTimeMetric = metricsMap(CONCAT_COPY_TO_GPU_TIME)
   private[this] val inputBatchesMetric = metricsMap(GpuMetric.NUM_INPUT_BATCHES)
   private[this] val inputRowsMetric = metricsMap(GpuMetric.NUM_INPUT_ROWS)
   private[this] val opTimeMetric = metricsMap(GpuMetric.OP_TIME)
@@ -273,10 +282,10 @@ class KudoShuffleCoalesceIterator(
 
   private val cudfSchema = GpuColumnVector.from(dataTypes)
 
-//  {
-//    System.err.println(s"Spark schema: ${dataTypes.mkString("Spark(", ", ", ")")}, cudf " +
-//      s"schema: $cudfSchema")
-//  }
+  //  {
+  //    System.err.println(s"Spark schema: ${dataTypes.mkString("Spark(", ", ", ")")}, cudf " +
+  //      s"schema: $cudfSchema")
+  //  }
 
 
   // Don't install the callback if in a unit test
@@ -298,16 +307,19 @@ class KudoShuffleCoalesceIterator(
         (0 until numTablesInBatch).foreach(_ => serializedTables.removeFirst())
         new ColumnarBatch(Array.empty, numRowsInBatch)
       } else {
-        val (left, right) = serializedTables.splitAt(numTablesInBatch)
-
-        serializedTables.clear()
-
-        serializedTables.addAll(right)
 
         GpuSemaphore.acquireIfNecessary(TaskContext.get())
 
-        withResource(left.toList) { serTables =>
-          withResource(kudo.mergeTable(serTables, cudfSchema)) { cudfTable =>
+        withResource(new util.ArrayList[SerializedTable](numTablesInBatch)) { serTables =>
+          (0 until numTablesInBatch).foreach(_ => serTables.add(serializedTables.removeFirst()))
+          val result = kudo.mergeTable(serTables, cudfSchema)
+          val metrics = result.getRight
+
+          concatMergeHeaderTimeMetric += metrics.getCalcHeaderTime
+          concatMergeBufferTimeMetric += metrics.getMergeIntoHostBufferTime
+          concatCopyToGpuTimeMetric += metrics.getConvertIntoContiguousTableTime
+
+          withResource(result.getLeft) { cudfTable =>
             GpuColumnVectorFromBuffer.from(cudfTable, dataTypes)
           }
         }
@@ -370,14 +382,14 @@ class KudoShuffleCoalesceIterator(
         }
         val batch = concatenateTables()
 
-//        {
-//          val taskContext = TaskContext.get()
-//          if (taskContext != null) {
-//            val name = s"shuffle_coalesce_result, stage_id=${taskContext.stageId()}, " +
-//              s"partition_id=${taskContext.partitionId()}"
-//            GpuColumnVector.debug(name, batch)
-//          }
-//        }
+        //        {
+        //          val taskContext = TaskContext.get()
+        //          if (taskContext != null) {
+        //            val name = s"shuffle_coalesce_result, stage_id=${taskContext.stageId()}, " +
+        //              s"partition_id=${taskContext.partitionId()}"
+        //            GpuColumnVector.debug(name, batch)
+        //          }
+        //        }
         outputBatchesMetric += 1
         outputRowsMetric += batch.numRows()
         batch

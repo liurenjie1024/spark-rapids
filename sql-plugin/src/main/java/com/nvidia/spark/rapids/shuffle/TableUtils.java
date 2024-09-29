@@ -8,7 +8,9 @@ import ai.rapids.cudf.Table;
 
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.concurrent.Callable;
 import java.util.function.Function;
+import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -123,5 +125,12 @@ public class TableUtils {
 
   public static <R extends AutoCloseable> void closeQuietly(Iterable<R> resources) {
     closeQuietly(resources.iterator());
+  }
+
+  public static <T> T withTime(Supplier<T> task, LongConsumer timeConsumer) {
+    long now = System.nanoTime();
+    T ret = task.get();
+    timeConsumer.accept(System.nanoTime() - now);
+    return ret;
   }
 }

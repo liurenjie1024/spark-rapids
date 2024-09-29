@@ -18,13 +18,13 @@ package com.nvidia.spark.rapids
 
 import java.io.File
 
-import ai.rapids.cudf.{ColumnVector, DType, HostColumnVectorCore, Table}
+import ai.rapids.cudf.{ColumnVector, HostColumnVectorCore, Table}
 import ai.rapids.cudf.DType.DTypeEnum
 import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.shims.SparkShimImpl
 import org.scalatest.Assertions
-import org.apache.spark.SparkConf
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
