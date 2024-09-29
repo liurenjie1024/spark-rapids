@@ -40,6 +40,14 @@ public class HostMergeResult implements AutoCloseable {
         });
     }
 
+    public long getDataLen() {
+        if (hostBuf != null) {
+            return hostBuf.getLength();
+        } else {
+            return 0L;
+        }
+    }
+
     @Override
     public String toString() {
         return "HostMergeResult{" +

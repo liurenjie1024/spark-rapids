@@ -27,6 +27,7 @@ import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.RmmRapidsRetryIterator.withRetryNoSplit
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.shims.GpuHashPartitioning
+import com.nvidia.spark.rapids.shuffle.kudo
 
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -249,11 +250,11 @@ object GpuShuffledSizedHashJoinExec {
     }
 
     override def getProbeBatchRowCount(batch: SpillableHostConcatResult): Long = {
-      batch.header.getNumRows
+      batch.getNumRows
     }
 
     override def getProbeBatchDataSize(batch: SpillableHostConcatResult): Long = {
-      batch.header.getDataLen
+      batch.getDataLen
     }
   }
 
@@ -292,7 +293,7 @@ object GpuShuffledSizedHashJoinExec {
     override def getProbeBatchRowCount(batch: ColumnarBatch): Long = batch.numRows()
 
     override def getProbeBatchDataSize(batch: ColumnarBatch): Long = {
-      SerializedTableColumn.getMemoryUsed(batch)
+      GpuShuffleCoalesceUtils.getMemoryUsedFromSered(batch)
     }
   }
 
@@ -430,7 +431,13 @@ abstract class GpuShuffledSizedHashJoinExec[HOST_BATCH_TYPE <: AutoCloseable] ex
     val isRightHost = isHostBatchProducer(right)
     val localCondition = condition
     val localGpuBatchSizeBytes = gpuBatchSizeBytes
-    val localMetrics = allMetrics.withDefaultValue(NoopMetric)
+    val localMetrics = allMetrics.withDefaultValue(NoopMetric) - (
+      GpuMetric.NUM_INPUT_ROWS,
+      GpuMetric.NUM_INPUT_BATCHES,
+      GpuMetric.NUM_OUTPUT_BATCHES,
+      GpuMetric.NUM_OUTPUT_ROWS)
+    val numOutputRows = allMetrics(NUM_OUTPUT_ROWS)
+    val numOutputBatches = allMetrics(NUM_OUTPUT_BATCHES)
     val localUseSplitRetryRead = useSplitRetryRead
     val localKudoConf = kudoConf
     left.executeColumnar().zipPartitions(right.executeColumnar()) { case (leftIter, rightIter) =>
@@ -461,8 +468,6 @@ abstract class GpuShuffledSizedHashJoinExec[HOST_BATCH_TYPE <: AutoCloseable] ex
       } else {
         doBigBuildJoin(joinInfo, localGpuBatchSizeBytes, localMetrics)
       }
-      val numOutputRows = localMetrics(NUM_OUTPUT_ROWS)
-      val numOutputBatches = localMetrics(NUM_OUTPUT_BATCHES)
       joinIterator.map { cb =>
         numOutputRows += cb.numRows()
         numOutputBatches += 1
@@ -1111,25 +1116,50 @@ case class GpuShuffledAsymmetricHashJoinExec(
 /**
  * A spillable form of a HostConcatResult. Takes ownership of the specified host buffer.
  */
-class SpillableHostConcatResult(
-    val header: SerializedTableHeader,
-    hmb: HostMemoryBuffer) extends AutoCloseable {
-  private var buffer = {
-    SpillableHostBuffer(hmb, hmb.getLength, SpillPriorities.ACTIVE_BATCHING_PRIORITY)
-  }
+sealed trait SpillableHostConcatResult extends AutoCloseable {
+  def hmb: HostMemoryBuffer
+  def toBatch: ColumnarBatch
+  def getNumRows: Long
+  def getDataLen: Long
 
-  def getHostMemoryBufferAndClose(): HostMemoryBuffer = {
-    val hostBuffer = buffer.getHostBuffer()
-    closeOnExcept(hostBuffer) { _ =>
-      close()
-    }
-    hostBuffer
+  protected var buffer = {
+    SpillableHostBuffer(hmb, hmb.getLength, SpillPriorities.ACTIVE_BATCHING_PRIORITY)
   }
 
   override def close(): Unit = {
     buffer.close()
     buffer = null
   }
+}
+
+class CudfSpillableHostConcatResult(
+    header: SerializedTableHeader,
+    val hmb: HostMemoryBuffer) extends SpillableHostConcatResult {
+
+  override def toBatch: ColumnarBatch = {
+    closeOnExcept(buffer.getHostBuffer()) { hostBuf =>
+      SerializedTableColumn.from(header, hostBuf)
+    }
+  }
+
+  override def getNumRows: Long = header.getNumRows
+
+  override def getDataLen: Long = header.getDataLen
+}
+
+class KudoSpillableHostConcatResult(
+    header: kudo.SerializedTableHeader,
+    val hmb: HostMemoryBuffer) extends SpillableHostConcatResult {
+
+  override def toBatch: ColumnarBatch = {
+    closeOnExcept(buffer.getHostBuffer()) { hostBuf =>
+      KudoSerializedTableColumn(header, hostBuf).toColumnarBatch
+    }
+  }
+
+  override def getNumRows: Long = header.getNumRows
+
+  override def getDataLen: Long = header.getTotalDataLen
 }
 
 /**
@@ -1147,7 +1177,11 @@ class SpillableHostConcatResultFromColumnarBatchIterator(
         case col: SerializedTableColumn =>
           val buffer = col.hostBuffer
           buffer.incRefCount()
-          new SpillableHostConcatResult(col.header, buffer)
+          new CudfSpillableHostConcatResult(col.header, buffer)
+        case kudoCol: KudoSerializedTableColumn =>
+          val buffer = kudoCol.inner.getBuffer
+          buffer.incRefCount()
+          new KudoSpillableHostConcatResult(kudoCol.inner.getHeader, buffer)
         case c =>
           throw new IllegalStateException(s"Expected SerializedTableColumn, got ${c.getClass}")
       }
@@ -1171,10 +1205,7 @@ class HostQueueBatchIterator(
 
   override def next(): ColumnarBatch = {
     if (spillableQueue.nonEmpty) {
-      val shcr = spillableQueue.dequeue()
-      closeOnExcept(shcr.getHostMemoryBufferAndClose()) { hostBuffer =>
-        SerializedTableColumn.from(shcr.header, hostBuffer)
-      }
+      withResource(spillableQueue.dequeue())(_.toBatch)
     } else {
       batchIter.next()
     }
