@@ -27,8 +27,7 @@ import ai.rapids.cudf.JCudfSerialization.SerializedTableHeader
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
-import com.nvidia.spark.rapids.shuffle.TableSerializer
-import com.nvidia.spark.rapids.shuffle.kudo.SerializedTable
+import com.nvidia.spark.rapids.shuffle.kudo.{KudoSerializer, SerializedTable}
 
 import org.apache.spark.TaskContext
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
@@ -114,7 +113,7 @@ class SerializedBatchIterator(dIn: DataInputStream, deserTime: GpuMetric)
 }
 
 class KudoBatchIterator(private val din: InputStream,
-    kudo: TableSerializer,
+    kudo: KudoSerializer,
     deserTime: GpuMetric)
   extends Iterator[(Int,
     ColumnarBatch)] {

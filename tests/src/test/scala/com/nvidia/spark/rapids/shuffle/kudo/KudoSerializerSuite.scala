@@ -68,25 +68,25 @@ class KudoSerializerSuite extends AnyFunSuite {
   test("MergeTableWithDifferentValidity") {
     withResource(new ArrayBuffer[Table]()) { tables =>
       tables += new Table.TestBuilder()
-        .column(longs(-83182L, 5822L, 3389L, 7384L, 7297L):_*)
-        .column(doubles(-2.06, -2.14, 8.04, 1.16, -1.0):_*)
+        .column(longs(-83182L, 5822L, 3389L, 7384L, 7297L): _*)
+        .column(doubles(-2.06, -2.14, 8.04, 1.16, -1.0): _*)
         .build()
 
       tables += new Table.TestBuilder()
         .column(longs(-47L, null.asInstanceOf[JLong], -83L, -166L, -220L, 470L, 619L, 803L,
-          661L):_*)
+          661L): _*)
         .column(doubles(-6.08, 1.6, 1.78, -8.01, 1.22, 1.43, 2.13, -1.65, null
-          .asInstanceOf[JDouble]):_*)
+          .asInstanceOf[JDouble]): _*)
         .build()
 
       tables += new Table.TestBuilder()
-        .column(longs(8722L, 8733L):_*)
-        .column(doubles(2.51, 0.0):_*)
+        .column(longs(8722L, 8733L): _*)
+        .column(doubles(2.51, 0.0): _*)
         .build()
 
       tables += new Table.TestBuilder()
-        .column(longs(7384L, 7297L, 803L, 661L, 8733L):_*)
-        .column(doubles(1.16, -1.0, -1.65, null.asInstanceOf[JDouble], 0.0):_*)
+        .column(longs(7384L, 7297L, 803L, 661L, 8733L): _*)
+        .column(doubles(1.16, -1.0, -1.65, null.asInstanceOf[JDouble], 0.0): _*)
         .build()
 
       checkMergeTable(tables(3), Seq(
@@ -99,7 +99,7 @@ class KudoSerializerSuite extends AnyFunSuite {
   test("Merge List") {
     withResource(new ArrayBuffer[Table]()) { tables =>
       tables += new Table.TestBuilder()
-        .column(longs(-881L, 482L, 660L, 896L, -129L, -108L, -428L, 0L, 617L, 782L):_*)
+        .column(longs(-881L, 482L, 660L, 896L, -129L, -108L, -428L, 0L, 617L, 782L): _*)
         .column(integers(665), integers(-267), integers(398), integers(-314),
           integers(-370), integers(181), integers(665, 544), integers(222), integers(-587),
           integers(544))
@@ -107,7 +107,7 @@ class KudoSerializerSuite extends AnyFunSuite {
 
       tables += new Table.TestBuilder()
         .column(longs(-881L, 482L, 660L, 896L, 122L, 241L, 281L, 680L, 783L,
-          null.asInstanceOf[JLong]):_*)
+          null.asInstanceOf[JLong]): _*)
         .column(integers(-370), integers(398), integers(-587, 398), integers(-314),
           integers(307), integers(-397, -633), integers(-314, 307), integers(-633), integers(-397),
           integers(181, -919, -175))
@@ -115,7 +115,7 @@ class KudoSerializerSuite extends AnyFunSuite {
 
       tables += new Table.TestBuilder()
         .column(longs(896L, -129L, -108L, -428L, 0L, 617L, 782L, 482L, 660L, 896L, 122L, 241L,
-          281L, 680L, 783L, null.asInstanceOf[JLong]):_*)
+          281L, 680L, 783L, null.asInstanceOf[JLong]): _*)
         .column(integers(-314), integers(-370), integers(181), integers(665, 544), integers(222),
           integers(-587), integers(544), integers(398), integers(-587, 398), integers(-314),
           integers(307), integers(-397, -633), integers(-314, 307), integers(-633), integers(-397),
@@ -138,7 +138,7 @@ class KudoSerializerSuite extends AnyFunSuite {
         .build()
 
       tables += new Table.TestBuilder()
-        .column(integers(509, 510, 511):_*)
+        .column(integers(509, 510, 511): _*)
         .build()
 
       checkMergeTable(tables(1), Seq(
@@ -156,28 +156,25 @@ class KudoSerializerSuite extends AnyFunSuite {
     bout.flush()
 
     val bin = new ByteArrayInputStream(bout.toByteArray)
-    val serializedBatches = (0 until slicedTables.size)
+    val serializedBatches = slicedTables.indices
       .map(_ => serializer.readOneTableBuffer(bin))
 
     var numRows = 0
-    for (obj <- serializedBatches) {
-      assert(obj.isInstanceOf[SerializedTable])
-      val serializedBatch = obj.asInstanceOf[SerializedTable]
+    for (serializedBatch <- serializedBatches) {
       numRows += serializedBatch.getHeader.getNumRows.toInt
       assert(numRows < Int.MaxValue)
     }
 
     assert(numRows == expectedTable.getRowCount)
 
-    withResource(serializer.mergeTable(serializedBatches.toList.asJava, schemaOf(expectedTable))) {
-      ct =>
+    withResource(serializer.mergeTable(serializedBatches.toList.asJava,
+      schemaOf(expectedTable)).getLeft) { ct =>
       val found = ct.getTable
-      (0 until found.getNumberOfColumns)foreach(idx => found.getColumn(idx).getNullCount)
+      (0 until found.getNumberOfColumns) foreach (idx => found.getColumn(idx).getNullCount)
       println("Found table: " + found)
       TestUtils.compareTables(expectedTable, found)
     }
   }
-
 
 
   private def buildTestTable(): Table = {
@@ -188,8 +185,8 @@ class KudoSerializerSuite extends AnyFunSuite {
           new HostColumnVector.BasicType(true, DType.STRING))))
     val mapStructType = new HostColumnVector.ListType(true,
       new HostColumnVector.StructType(true,
-      new HostColumnVector.BasicType(false, DType.STRING),
-      new HostColumnVector.BasicType(false, DType.STRING)))
+        new HostColumnVector.BasicType(false, DType.STRING),
+        new HostColumnVector.BasicType(false, DType.STRING)))
     val structType = new HostColumnVector.StructType(true,
       new HostColumnVector.BasicType(true, DType.INT32),
       new HostColumnVector.BasicType(false, DType.FLOAT32))
@@ -200,26 +197,26 @@ class KudoSerializerSuite extends AnyFunSuite {
     new Table.TestBuilder()
       .column(Array[java.lang.Integer](100, 202, 3003, 40004, 5, -60, 1, null, 3, null, 5, null,
         7,
-        null, 9, null, 11, null, 13, null, 15):_*)
+        null, 9, null, 11, null, 13, null, 15): _*)
       .column(true, true, false, false, true, null, true, true, null, false, false, null, true,
         true, null, false, false, null, true, true, null)
       .column(Array[java.lang.Byte](1.toByte, 2.toByte, null, 4.toByte, 5.toByte, 6.toByte,
         1.toByte, 2.toByte,
         3.toByte, null, 5.toByte, 6.toByte, 7.toByte, null, 9.toByte, 10.toByte, 11.toByte, null,
-        13.toByte, 14.toByte, 15.toByte):_*)
+        13.toByte, 14.toByte, 15.toByte): _*)
       .column(Array[java.lang.Short](6.toShort, 5.toShort, 4.toShort, null, 2.toShort, 1.toShort,
         1.toShort, 2.toShort, 3.toShort, null, 5.toShort, 6.toShort, 7.toShort, null, 9.toShort,
-        10.toShort, null, 12.toShort, 13.toShort, 14.toShort, null):_*)
+        10.toShort, null, 12.toShort, 13.toShort, 14.toShort, null): _*)
       .column(Array[java.lang.Long](1L, null, 1001L, 50L, -2000L, null, 1L, 2L, 3L, 4L, null, 6L,
-        7L, 8L, 9L, null, 11L, 12L, 13L, 14L, null):_*)
+        7L, 8L, 9L, null, 11L, 12L, 13L, 14L, null): _*)
       .column(Array[java.lang.Float](10.1f, 20f, -1, 3.1415f, -60f, null, 1f, 2f, 3f, 4f,
-        5f, null, 7f, 8f, 9f, 10f, 11f, null, 13f, 14f, 15f):_*)
+        5f, null, 7f, 8f, 9f, 10f, 11f, null, 13f, 14f, 15f): _*)
       .column(Array[java.lang.Float](10.1f, 20f, -2, 3.1415f, -60f, -50f, 1f, 2f, 3f, 4f,
-        5f, 6f, 7f, 8f, 9f, 10f, 11f, 12f, 13f, 14f, 15f):_*)
+        5f, 6f, 7f, 8f, 9f, 10f, 11f, 12f, 13f, 14f, 15f): _*)
       .column(Array[java.lang.Double](10.1, 20.0, 33.1, 3.1415, -60.5, null, 1d, 2.0, 3.0, 4.0, 5.0,
-        6.0, null, 8.0, 9.0, 10.0, 11.0, 12.0, null, 14.0, 15.0):_*)
+        6.0, null, 8.0, 9.0, 10.0, 11.0, 12.0, null, 14.0, 15.0): _*)
       .column(Array[java.lang.Float](null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null, null, null, null, null, null, null, null):_*)
+        null, null, null, null, null, null, null, null, null, null, null): _*)
 //      .timestampDayColumn(Array[java.lang.Integer](99, 100, 101, 102, 103, 104, 1, 2, 3, 4, 5, 6,
 //        7, null, 9, 10, 11, 12, 13, null, 15):_*)
 //      .timestampMillisecondsColumn(Array[java.lang.Long](9L, 1006L, 101L, 5092L, null, 88L, 1L,
@@ -227,26 +224,26 @@ class KudoSerializerSuite extends AnyFunSuite {
 //      .timestampSecondsColumn(Array[java.lang.Long](1L, null, 3L, 4L, 5L, 6L, 1L, 2L, 3L, 4L, 5L,
 //        6L, 7L, 8L, 9L, null, 11L, 12L, 13L, 14L, 15L):_*)
       .decimal32Column(-3, Array[java.lang.Integer](100, 202, 3003, 40004, 5, -60, 1, null, 3,
-        null, 5, null, 7, null, 9, null, 11, null, 13, null, 15):_*)
+        null, 5, null, 7, null, 9, null, 11, null, 13, null, 15): _*)
       .decimal64Column(-8, Array[java.lang.Long](1L, null, 1001L, 50L, -2000L, null, 1L, 2L, 3L,
-        4L, null, 6L, 7L, 8L, 9L, null, 11L, 12L, 13L, 14L, null):_*)
+        4L, null, 6L, 7L, 8L, 9L, null, 11L, 12L, 13L, 14L, null): _*)
       .column(Array[java.lang.String]("A", "B", "C", "D", null, "TESTING", "1", "2", "3", "4",
-        "5", "6", "7", null, "9", "10", "11", "12", "13", null, "15"):_*)
+        "5", "6", "7", null, "9", "10", "11", "12", "13", null, "15"): _*)
       .column(Array[java.lang.String]("A", "A", "C", "C", "E", "TESTING", "1", "2", "3", "4", "5",
-        "6", "7", "", "9", "10", "11", "12", "13", "", "15"):_*)
+        "6", "7", "", "9", "10", "11", "12", "13", "", "15"): _*)
       .column(Array[java.lang.String]("", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-        "", "", "", "", "", ""):_*)
+        "", "", "", "", "", ""): _*)
       .column(Array[java.lang.String]("", null, "", "", null, "", "", "", "", "", "", "", "", "",
-        "", "", "", "", "", "", ""):_*)
+        "", "", "", "", "", "", ""): _*)
       .column(Array[java.lang.String](null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null, null, null, null, null, null, null, null):_*)
-      .column(mapStructType,  Array[JList[StructData]](
+        null, null, null, null, null, null, null, null, null, null, null): _*)
+      .column(mapStructType, Array[JList[StructData]](
         structs(Seq(struct("1", "2"))), structs(Seq(struct("3", "4"))), null, null,
         structs(Seq(struct("key", "value"), struct("a", "b"))), null, null,
         structs(Seq(struct("3", "4"), struct("1", "2"))), structs(Seq()),
         structs(Seq(null, struct("foo", "bar"))),
         structs(Seq(null, null, null)), null, null, null, null, null, null, null, null, null,
-        structs(Seq(struct("the", "end")))):_*)
+        structs(Seq(struct("the", "end")))): _*)
       .column(structType, Array[StructData](structID(1, 1f), null, structID(2, 3f),
         null, structID(8, 7f), structID(0, 0f), null,
         null, structID(-1, -1f), structID(-100, -100f),
@@ -255,7 +252,7 @@ class KudoSerializerSuite extends AnyFunSuite {
         null, null,
         null, null,
         null, null,
-        structID(Integer.MIN_VALUE, Float.MinValue)):_*)
+        structID(Integer.MIN_VALUE, Float.MinValue)): _*)
       .column(integers(1, 2), null, integers(3, 4, null, 5, null), null, null, integers(6, 7, 8),
         integers(null, null, null), integers(1, 2, 3), integers(4, 5, 6), integers(7, 8, 9),
         integers(10, 11, 12), integers(null.asInstanceOf[Integer]), integers(14, null),
@@ -274,7 +271,7 @@ class KudoSerializerSuite extends AnyFunSuite {
         integers(null.asInstanceOf[Integer]), integers(null, null),
         integers(null, null, null, null, null))
       .column(Array[java.lang.Integer](null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null, null, null, null, null, null, null, null):_*)
+        null, null, null, null, null, null, null, null, null, null, null): _*)
       .column(strings("1", "2", "3"), strings("4"), strings("5"), strings("6, 7"),
         strings("", "9", null), strings("11"), strings(""), strings(null, null),
         strings("15", null), null, null, strings("18", "19", "20"), null, strings("22"),
@@ -291,7 +288,7 @@ class KudoSerializerSuite extends AnyFunSuite {
         strings(null.asInstanceOf[String]), strings(null, null),
         strings(null, null, null, null, null))
       .column(Array[java.lang.String](null, null, null, null, null, null, null, null, null, null,
-        null, null, null, null, null, null, null, null, null, null, null):_*)
+        null, null, null, null, null, null, null, null, null, null, null): _*)
       .column(listMapType, asList(asList(struct("k1", "v1"), struct("k2", "v2")),
         singletonList(struct("k3", "v3"))),
         asList(asList(struct("k4", "v4"), struct("k5", "v5"),

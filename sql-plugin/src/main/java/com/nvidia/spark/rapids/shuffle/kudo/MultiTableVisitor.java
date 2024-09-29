@@ -7,6 +7,7 @@ import com.nvidia.spark.rapids.shuffle.schema.SchemaVisitor;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
@@ -30,10 +31,10 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
     // Temporary variable to calcluate total data length of string column
     private long totalStrDataLen;
 
-    protected MultiTableVisitor(List<SerializedTable> tables) {
-        Objects.requireNonNull(tables, "tables cannot be null");
-        ensure(!tables.isEmpty(), "tables cannot be empty");
-        this.tables = tables;
+    protected MultiTableVisitor(List<SerializedTable> inputTables) {
+        Objects.requireNonNull(inputTables, "tables cannot be null");
+        ensure(!inputTables.isEmpty(), "tables cannot be empty");
+        this.tables = inputTables instanceof ArrayList ? inputTables : new ArrayList<>(inputTables);
         this.currentValidityOffsets = new long[tables.size()];
         this.currentOffsetOffsets = new long[tables.size()];
         this.currentDataOffset = new long[tables.size()];
