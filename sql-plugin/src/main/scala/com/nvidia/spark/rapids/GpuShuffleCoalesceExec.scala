@@ -150,7 +150,33 @@ object GpuShuffleCoalesceUtils {
       throw new IllegalArgumentException(s"unsupported type: ${o.getClass}")
   }
 
-  def getMemoryUsedFromSered(cb: ColumnarBatch): Long = {
+  def getHostShuffleCoalesceIterator(
+      iter: BufferedIterator[ColumnarBatch],
+      targetSize: Long,
+      dataTypes: Array[DataType],
+      coalesceMetrics: Map[String, GpuMetric],
+      kudoConf: Option[KudoConf]): Option[Iterator[AutoCloseable]] = {
+    var retIter: Option[Iterator[AutoCloseable]] = None
+    if (iter.hasNext && iter.head.numCols() == 1) {
+      iter.head.column(0) match {
+        case _: SerializedTableColumn =>
+          retIter = Some(new HostShuffleCoalesceIterator(iter, targetSize, coalesceMetrics))
+        case _: KudoSerializedTableColumn =>
+          retIter = Some(new KudoShuffleCoalesceIterator(iter, targetSize, coalesceMetrics,
+            kudoConf.get, dataTypes))
+        case _ => // should be gpu batches
+      }
+    }
+    retIter
+  }
+
+  def getCoalescedBufferSize(concated: AnyRef): Long = concated match {
+    case m: KudoMergeResult => m.getDataLen
+    case c: HostConcatResult => c.getTableHeader.getDataLen
+    case g => GpuColumnVector.getTotalDeviceMemoryUsed(g.asInstanceOf[ColumnarBatch])
+  }
+
+  def getSerializedBufferSize(cb: ColumnarBatch): Long = {
     assert(cb.numCols() == 1)
     val hmb = cb.column(0) match {
       case kudoCol: KudoSerializedTableColumn =>

@@ -293,7 +293,7 @@ object GpuShuffledSizedHashJoinExec {
     override def getProbeBatchRowCount(batch: ColumnarBatch): Long = batch.numRows()
 
     override def getProbeBatchDataSize(batch: ColumnarBatch): Long = {
-      GpuShuffleCoalesceUtils.getMemoryUsedFromSered(batch)
+      GpuShuffleCoalesceUtils.getSerializedBufferSize(batch)
     }
   }
 
