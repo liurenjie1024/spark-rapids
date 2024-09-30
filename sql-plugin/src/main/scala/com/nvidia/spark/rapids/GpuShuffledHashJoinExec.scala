@@ -293,32 +293,17 @@ object GpuShuffledHashJoinExec extends Logging {
     closeOnExcept(new CloseableBufferedIterator(buildIter)) { bufBuildIter =>
       val startTime = System.nanoTime()
       // Batches type detection
-      var coalesceBuiltIter: Iterator[_ <: AutoCloseable] = bufBuildIter
-      var getBatchSize: AnyRef => Long =
-        cb => GpuColumnVector.getTotalDeviceMemoryUsed(cb.asInstanceOf[ColumnarBatch])
-      var isBuildSerialized = false
-      if (bufBuildIter.hasNext && bufBuildIter.head.numCols() == 1) {
-        bufBuildIter.head.column(0) match {
-          case _: SerializedTableColumn =>
-            isBuildSerialized = true
-            getBatchSize = (cb) => cb.asInstanceOf[HostConcatResult].getTableHeader.getDataLen
-            coalesceBuiltIter = new HostShuffleCoalesceIterator(bufBuildIter, targetSize,
-              coalesceMetrics)
-          case _: KudoSerializedTableColumn =>
-            isBuildSerialized = true
-            getBatchSize = (cb) => cb.asInstanceOf[KudoMergeResult].getDataLen
-            coalesceBuiltIter = new KudoShuffleCoalesceIterator(bufBuildIter, targetSize,
-              coalesceMetrics, kudoConf.get, buildTypes)
-          case _ => // should be gpu batches
-        }
-      }
-
+      val hostBuildIter = GpuShuffleCoalesceUtils.getHostShuffleCoalesceIterator(
+        bufBuildIter, targetSize, buildTypes, coalesceMetrics, kudoConf)
+      val isBuildSerialized = hostBuildIter.isDefined
+      val coalesceBuiltIter = hostBuildIter.getOrElse(bufBuildIter)
       if (coalesceBuiltIter.hasNext) {
         val firstBuildBatch = coalesceBuiltIter.next()
         // Batches have coalesced to the target size, so size will overflow if there are
         // more than one batch, or the first batch size already exceeds the target.
         val sizeOverflow = closeOnExcept(firstBuildBatch) { _ =>
-          coalesceBuiltIter.hasNext || getBatchSize(firstBuildBatch) > targetSize
+          coalesceBuiltIter.hasNext ||
+            GpuShuffleCoalesceUtils.getCoalescedBufferSize(firstBuildBatch) > targetSize
         }
         val needSingleBuildBatch = !subPartConf.getOrElse(sizeOverflow)
         if (needSingleBuildBatch && isBuildSerialized && !sizeOverflow) {
@@ -329,8 +314,9 @@ object GpuShuffledHashJoinExec extends Logging {
           val (singleBuildCb, bufferedStreamIter) = getBuildBatchOptimizedAndClose(
             firstBuildBatch, streamIter, buildTypes, buildGoal, buildTime)
           logDebug("In the optimized case for grabbing the GPU semaphore, return " +
-            s"a single batch (size: ${getBatchSize(singleBuildCb)}) for the build side " +
-            s"with $buildGoal goal.")
+            s"a single batch (size: " +
+            s"${GpuShuffleCoalesceUtils.getCoalescedBufferSize(singleBuildCb)}) for the " +
+            s"build side with $buildGoal goal.")
           (Left(singleBuildCb), bufferedStreamIter)
 
         } else { // Other cases without optimization
@@ -350,8 +336,9 @@ object GpuShuffledHashJoinExec extends Logging {
           }.getOrElse {
             if (needSingleBuildBatch) {
               val oneCB = getAsSingleBatch(gpuBuildIter, buildOutput, buildGoal, coalesceMetrics)
-              logDebug(s"Return a single batch (size: ${getBatchSize(oneCB)}) for the " +
-                s"build side with $buildGoal goal.")
+              logDebug(s"Return a single batch (size: " +
+                s"${GpuShuffleCoalesceUtils.getCoalescedBufferSize(oneCB)}) for the build " +
+                s"side with $buildGoal goal.")
               Left(oneCB)
             } else {
               logDebug("Return multiple batches as the build side data for the following " +
