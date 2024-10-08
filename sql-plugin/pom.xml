@@ -105,7 +105,7 @@
         <dependency>
             <groupId>io.glutenproject</groupId>
             <artifactId>backends-velox</artifactId>
-            <version>1.2.0-rapids-SNAPSHOT</version>
+	    <version>${gluten.version}</version>
         </dependency>
         <dependency>
             <groupId>io.glutenproject</groupId>
