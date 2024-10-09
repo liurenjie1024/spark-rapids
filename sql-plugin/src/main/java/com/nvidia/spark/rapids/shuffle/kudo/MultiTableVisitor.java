@@ -138,9 +138,8 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
         for (int tableIdx = 0; tableIdx < getTableSize(); tableIdx += 1) {
             SliceInfo sliceInfo = sliceInfoOf(tableIdx);
             if (sliceInfo.getRowCount() > 0) {
-                IntBuffer offsetBuffer = offsetBufferOf(tableIdx);
-                int offset = offsetBuffer.get(0);
-                int endOffset = offsetBuffer.get(safeLongToInt(sliceInfo.getRowCount()));
+                int offset = offsetOf(tableIdx, 0);
+                int endOffset = offsetOf(tableIdx, safeLongToInt(sliceInfo.getRowCount()));
 
                 strDataLen[tableIdx] = endOffset - offset;
                 totalStrDataLen += strDataLen[tableIdx];
@@ -156,9 +155,8 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
             SliceInfo sliceInfo = sliceInfoOf(tableIdx);
             if (sliceInfo.getRowCount() > 0) {
                 if (updateSliceInfo) {
-                    IntBuffer offsetBuffer = offsetBufferOf(tableIdx);
-                    int startOffset = offsetBuffer.get(0);
-                    int endOffset = offsetBuffer.get(safeLongToInt(sliceInfo.getRowCount()));
+                    int startOffset = offsetOf(tableIdx, 0);
+                    int endOffset = offsetOf(tableIdx, safeLongToInt(sliceInfo.getRowCount()));
                     int rowCount = endOffset - startOffset;
                     totalRowCount += rowCount;
 
@@ -210,29 +208,51 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
         return sliceInfoStack[tableIdx].getLast();
     }
 
-    protected IntBuffer offsetBufferOf(int tableIdx) {
-        long startOffset = currentOffsetOffsets[tableIdx];
-        int length = safeLongToInt((sliceInfoOf(tableIdx).getRowCount() + 1) * Integer.BYTES);
-        return tables.get(tableIdx)
-                .getBuffer()
-                .asByteBuffer(startOffset, length)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .asIntBuffer();
+    protected HostMemoryBuffer memoryBufferOf(int tableIdx) {
+        return tables.get(tableIdx).getBuffer();
     }
 
-    protected HostMemoryBuffer validityBufferOf(int tableIdx) {
+//    protected IntBuffer offsetBufferOf(int tableIdx) {
+//        long startOffset = currentOffsetOffsets[tableIdx];
+//        int length = safeLongToInt((sliceInfoOf(tableIdx).getRowCount() + 1) * Integer.BYTES);
+//        return tables.get(tableIdx)
+//                .getBuffer()
+//                .asByteBuffer(startOffset, length)
+//                .order(ByteOrder.LITTLE_ENDIAN)
+//                .asIntBuffer();
+//    }
+
+    protected int offsetOf(int tableIdx, long rowIdx) {
+        long startOffset = currentOffsetOffsets[tableIdx];
+        return tables.get(tableIdx).getBuffer().getInt(startOffset + rowIdx * Integer.BYTES);
+    }
+
+//    protected HostMemoryBuffer validityBufferOf(int tableIdx) {
+//        if (tables.get(tableIdx).getHeader().hasValidityBuffer(currentIdx)) {
+//            long startOffset = currentValidityOffsets[tableIdx];
+//            long length = sliceInfoOf(tableIdx).getValidityBufferInfo().getBufferLength();
+//            return tables.get(tableIdx).getBuffer().slice(startOffset, length);
+//        } else {
+//            return null;
+//        }
+//    }
+
+    protected long validifyBufferOffset(int tableIdx) {
         if (tables.get(tableIdx).getHeader().hasValidityBuffer(currentIdx)) {
-            long startOffset = currentValidityOffsets[tableIdx];
-            long length = sliceInfoOf(tableIdx).getValidityBufferInfo().getBufferLength();
-            return tables.get(tableIdx).getBuffer().slice(startOffset, length);
+            return currentValidityOffsets[tableIdx];
         } else {
-            return null;
+            return -1;
         }
     }
 
-    protected HostMemoryBuffer dataBufferOf(int tableIdx, int dataLen) {
+//    protected HostMemoryBuffer dataBufferOf(int tableIdx, int dataLen) {
+//        long startOffset = currentDataOffset[tableIdx];
+//        return tables.get(tableIdx).getBuffer().slice(startOffset, dataLen);
+//    }
+
+    protected void copyDataBuffer(HostMemoryBuffer dst, long dstOffset, int tableIdx, int dataLen) {
         long startOffset = currentDataOffset[tableIdx];
-        return tables.get(tableIdx).getBuffer().slice(startOffset, dataLen);
+        dst.copyFromHostBuffer(dstOffset, tables.get(tableIdx).getBuffer(), startOffset, dataLen);
     }
 
     protected long getTotalStrDataLen() {
