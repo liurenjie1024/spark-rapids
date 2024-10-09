@@ -22,8 +22,6 @@ public final class SerializedTableHeader {
     // Useful for reducing calculations in writing.
     private long offset;
     private long numRows;
-    private long validityBufferLen;
-    private long offsetBufferLen;
     private long totalDataLen;
     // This is used to indicate the validity buffer for the columns.
     // 1 means that this column has validity data, 0 means it does not.
@@ -36,11 +34,9 @@ public final class SerializedTableHeader {
         readFrom(din);
     }
 
-    SerializedTableHeader(long offset, long numRows, long validityBufferLen, long offsetBufferLen, long totalDataLen, byte[] hasValidityBuffer) {
+    SerializedTableHeader(long offset, long numRows, long totalDataLen, byte[] hasValidityBuffer) {
         this.offset = offset;
         this.numRows = numRows;
-        this.validityBufferLen = validityBufferLen;
-        this.offsetBufferLen = offsetBufferLen;
         this.totalDataLen = totalDataLen;
         this.hasValidityBuffer = hasValidityBuffer;
 
@@ -85,14 +81,6 @@ public final class SerializedTableHeader {
         return Optional.ofNullable(hasValidityBuffer).map(arr -> arr.length).orElse(0);
     }
 
-    public long getValidityBufferLen() {
-        return validityBufferLen;
-    }
-
-    public long getOffsetBufferLen() {
-        return offsetBufferLen;
-    }
-
     public boolean isInitialized() {
         return initialized;
     }
@@ -116,8 +104,6 @@ public final class SerializedTableHeader {
         offset = din.readLong();
         numRows = din.readLong();
 
-        validityBufferLen = din.readLong();
-        offsetBufferLen = din.readLong();
         totalDataLen = din.readLong();
         int validityBufferLength = din.readInt();
         hasValidityBuffer = new byte[validityBufferLength];
@@ -133,8 +119,6 @@ public final class SerializedTableHeader {
 
         dout.writeLong(offset);
         dout.writeLong(numRows);
-        dout.writeLong(validityBufferLen);
-        dout.writeLong(offsetBufferLen);
         dout.writeLong(totalDataLen);
         dout.writeInt(hasValidityBuffer.length);
         dout.write(hasValidityBuffer, 0, hasValidityBuffer.length);
@@ -145,8 +129,6 @@ public final class SerializedTableHeader {
         return "SerializedTableHeader{" +
                 "offset=" + offset +
                 ", numRows=" + numRows +
-                ", validityBufferLen=" + validityBufferLen +
-                ", offsetBufferLen=" + offsetBufferLen +
                 ", totalDataLen=" + totalDataLen +
                 ", hasValidityBuffer=" + Arrays.toString(hasValidityBuffer) +
                 ", initialized=" + initialized +

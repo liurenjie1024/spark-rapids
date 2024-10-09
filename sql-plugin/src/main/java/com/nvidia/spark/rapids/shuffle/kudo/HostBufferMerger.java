@@ -294,10 +294,8 @@ public class HostBufferMerger extends MultiTableVisitor<Void, HostMergeResult> {
                         SliceInfo sliceInfo = sliceInfoOf(tableIdx);
                         if (sliceInfo.getRowCount() > 0) {
                             int thisDataLen = safeLongToInt(elementSize * sliceInfo.getRowCount());
-                            try (HostMemoryBuffer thisBuf = dataBufferOf(tableIdx, thisDataLen)) {
-                                buf.copyFromHostBuffer(start, thisBuf, 0, thisDataLen);
-                                start += thisDataLen;
-                            }
+                            copyDataBuffer(buf, start, tableIdx, thisDataLen);
+                            start += thisDataLen;
                         }
                     }
                 } else {
@@ -305,10 +303,8 @@ public class HostBufferMerger extends MultiTableVisitor<Void, HostMergeResult> {
                     long start = 0;
                     for (int tableIdx = 0; tableIdx < getTableSize(); tableIdx += 1) {
                         int thisDataLen = getStrDataLenOf(tableIdx);
-                        try (HostMemoryBuffer thisBuf = dataBufferOf(tableIdx, thisDataLen)) {
-                            buf.copyFromHostBuffer(start, thisBuf, 0, thisDataLen);
-                            start += thisDataLen;
-                        }
+                        copyDataBuffer(buf, start, tableIdx, thisDataLen);
+                        start += thisDataLen;
                     }
                 }
             }

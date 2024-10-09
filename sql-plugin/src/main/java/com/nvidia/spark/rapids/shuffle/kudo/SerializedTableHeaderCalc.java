@@ -17,8 +17,6 @@ import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padFor64byteAl
 class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, SerializedTableHeader> {
     private final SliceInfo root;
     private final List<Boolean> hasValidityBuffer = new ArrayList<>(1024);
-    private long validityBufferLen;
-    private long offsetBufferLen;
     private long totalDataLen;
 
     private Deque<SliceInfo> sliceInfos = new ArrayDeque<>();
@@ -36,7 +34,6 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
             hasValidityBuffer[i] = (byte) (this.hasValidityBuffer.get(i) ? 1 : 0);
         }
         return new SerializedTableHeader(root.offset, root.rowCount,
-                validityBufferLen, offsetBufferLen,
                 totalDataLen, hasValidityBuffer);
     }
 
@@ -49,7 +46,6 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
             validityBufferLength = padFor64byteAlignment(parent.getValidityBufferInfo().getBufferLength());
         }
 
-        this.validityBufferLen += validityBufferLength;
 
         totalDataLen += validityBufferLength;
         hasValidityBuffer.add(col.getValidity() != null);
@@ -71,8 +67,6 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
             offsetBufferLength = padFor64byteAlignment((parent.rowCount + 1) * Integer.BYTES);
         }
 
-        this.validityBufferLen += validityBufferLength;
-        this.offsetBufferLen += offsetBufferLength;
         this.totalDataLen += validityBufferLength + offsetBufferLength;
 
         hasValidityBuffer.add(col.getValidity() != null);
@@ -107,8 +101,6 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
         long offsetBufferLen = calcPrimitiveDataLen(primitiveType, col, BufferType.OFFSET, parent);
         long dataBufferLen = calcPrimitiveDataLen(primitiveType, col, BufferType.DATA, parent);
 
-        this.validityBufferLen += validityBufferLen;
-        this.offsetBufferLen += offsetBufferLen;
         this.totalDataLen += validityBufferLen + offsetBufferLen + dataBufferLen;
 
         hasValidityBuffer.add(col.getValidity() != null);

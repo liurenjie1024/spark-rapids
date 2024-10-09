@@ -18,11 +18,10 @@ import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.safeLongToInt;
 
 public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
     private final List<SerializedTable> tables;
-    private final long[] currentValidityOffsets;
-    private final long[] currentOffsetOffsets;
     private final long[] currentDataOffset;
     private final Deque<SliceInfo>[] sliceInfoStack;
     private final Deque<Long> totalRowCountStack;
+    private final ColumnBufferProvider[] columns;
     // A temporary variable to keep if current column has null
     private boolean hasNull;
     private int currentIdx;
@@ -35,15 +34,10 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
         Objects.requireNonNull(inputTables, "tables cannot be null");
         ensure(!inputTables.isEmpty(), "tables cannot be empty");
         this.tables = inputTables instanceof ArrayList ? inputTables : new ArrayList<>(inputTables);
-        this.currentValidityOffsets = new long[tables.size()];
-        this.currentOffsetOffsets = new long[tables.size()];
         this.currentDataOffset = new long[tables.size()];
         this.sliceInfoStack = new Deque[tables.size()];
         for (int i = 0; i < tables.size(); i++) {
-            this.currentValidityOffsets[i] = 0;
             SerializedTableHeader header = tables.get(i).getHeader();
-            this.currentOffsetOffsets[i] = header.getValidityBufferLen();
-            this.currentDataOffset[i] = header.getValidityBufferLen() + header.getOffsetBufferLen();
             this.sliceInfoStack[i] = new ArrayDeque<>(16);
             this.sliceInfoStack[i].add(new SliceInfo(header.getOffset(), header.getNumRows()));
         }
@@ -230,9 +224,15 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
         }
     }
 
-    protected HostMemoryBuffer dataBufferOf(int tableIdx, int dataLen) {
+//    protected HostMemoryBuffer dataBufferOf(int tableIdx, int dataLen) {
+//        long startOffset = currentDataOffset[tableIdx];
+//        return tables.get(tableIdx).getBuffer().slice(startOffset, dataLen);
+//    }
+
+    protected void copyDataBuffer(HostMemoryBuffer dst, long dstOffset, int tableIdx, int dataLen) {
         long startOffset = currentDataOffset[tableIdx];
-        return tables.get(tableIdx).getBuffer().slice(startOffset, dataLen);
+        HostMemoryBuffer src = tables.get(tableIdx).getBuffer();
+        dst.copyFromHostBuffer(dstOffset, src, startOffset, dataLen);
     }
 
     protected long getTotalStrDataLen() {

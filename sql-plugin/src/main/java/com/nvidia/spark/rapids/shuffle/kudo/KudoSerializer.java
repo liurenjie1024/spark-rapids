@@ -80,7 +80,7 @@ public class KudoSerializer {
     }
     try {
       DataWriter writer = writerFrom(out);
-      SerializedTableHeader header = new SerializedTableHeader(0, safeLongToInt(numRows), 0, 0, 0, new byte[0]);
+      SerializedTableHeader header = new SerializedTableHeader(0, safeLongToInt(numRows),  0, new byte[0]);
       header.writeTo(writer);
       writer.flush();
       return header.getSerializedSize();
@@ -158,10 +158,8 @@ public class KudoSerializer {
     SerializedTableHeader header = Visitors.visitSchemaWithColumns(schema, columnList, headerCalc);
     header.writeTo(out);
 
-    long bytesWritten = 0;
-    for (BufferType bufferType : Arrays.asList(BufferType.VALIDITY, BufferType.OFFSET, BufferType.DATA)) {
-      bytesWritten += Visitors.visitSchemaWithColumns(schema, columnList, new SlicedBufferSerializer(rowOffset, numRows, bufferType, out));
-    }
+    long bytesWritten = Visitors.visitSchemaWithColumns(schema, columnList,
+        new SlicedBufferSerializer(rowOffset, numRows, out));
 
     if (bytesWritten != header.getTotalDataLen()) {
       throw new IllegalStateException("Header total data length: " + header.getTotalDataLen() +
