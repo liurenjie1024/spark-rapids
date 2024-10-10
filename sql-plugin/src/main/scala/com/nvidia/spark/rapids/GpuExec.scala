@@ -91,6 +91,8 @@ object GpuMetric extends Logging {
   val DELETION_VECTOR_SCATTER_TIME = "deletionVectorScatterTime"
   val DELETION_VECTOR_SIZE = "deletionVectorSize"
   val NUM_SPLIT_RETRY = "numSplitRetry"
+  val CONCAT_MERGE_HEADER_TIME = "concatMergeHeaderTime"
+  val CONCAT_MERGE_HOST_BUFFER_TIME = "concatMergeBufferTime"
 
   // Metric Descriptions.
   val DESCRIPTION_SPLIT_RETRY = "number of split-retries"
@@ -131,6 +133,8 @@ object GpuMetric extends Logging {
   val DESCRIPTION_FILECACHE_DATA_RANGE_READ_TIME = "cached data read time"
   val DESCRIPTION_DELETION_VECTOR_SCATTER_TIME = "deletion vector scatter time"
   val DESCRIPTION_DELETION_VECTOR_SIZE = "deletion vector size"
+  val DESCRIPTION_CONCAT_MERGE_HEADER_TIME = "merge header time when concat"
+  val DESCRIPTION_CONCAT_MERGE_HOST_BUFFER_TIME = "merge host buffer time when concat"
 
   def unwrap(input: GpuMetric): SQLMetric = input match {
     case w :WrappedGpuMetric => w.sqlMetric

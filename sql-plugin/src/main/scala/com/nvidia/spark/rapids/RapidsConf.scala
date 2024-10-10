@@ -23,11 +23,10 @@ import scala.collection.mutable.{HashMap, ListBuffer}
 import ai.rapids.cudf.Cuda
 import com.nvidia.spark.rapids.jni.RmmSpark.OomInjectionType
 import com.nvidia.spark.rapids.lore.{LoreId, OutputLoreId}
-import com.nvidia.spark.rapids.shuffle.TableSerializer
 import com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer
 import java.util
-import org.apache.spark.SparkConf
 
+import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.{ByteUnit, JavaUtils}
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
@@ -3472,5 +3471,5 @@ case class OomInjectionConf(
 )
 
 case class KudoConf() {
-  def serializer(): TableSerializer = new KudoSerializer()
+  def serializer(): KudoSerializer = new KudoSerializer()
 }

@@ -7,6 +7,7 @@ import com.nvidia.spark.rapids.shuffle.schema.SchemaVisitor;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Objects;
@@ -30,10 +31,10 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
     // Temporary variable to calcluate total data length of string column
     private long totalStrDataLen;
 
-    protected MultiTableVisitor(List<SerializedTable> tables) {
-        Objects.requireNonNull(tables, "tables cannot be null");
-        ensure(!tables.isEmpty(), "tables cannot be empty");
-        this.tables = tables;
+    protected MultiTableVisitor(List<SerializedTable> inputTables) {
+        Objects.requireNonNull(inputTables, "tables cannot be null");
+        ensure(!inputTables.isEmpty(), "tables cannot be empty");
+        this.tables = inputTables instanceof ArrayList ? inputTables : new ArrayList<>(inputTables);
         this.currentValidityOffsets = new long[tables.size()];
         this.currentOffsetOffsets = new long[tables.size()];
         this.currentDataOffset = new long[tables.size()];
@@ -137,9 +138,8 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
         for (int tableIdx = 0; tableIdx < getTableSize(); tableIdx += 1) {
             SliceInfo sliceInfo = sliceInfoOf(tableIdx);
             if (sliceInfo.getRowCount() > 0) {
-                IntBuffer offsetBuffer = offsetBufferOf(tableIdx);
-                int offset = offsetBuffer.get(0);
-                int endOffset = offsetBuffer.get(safeLongToInt(sliceInfo.getRowCount()));
+                int offset = offsetOf(tableIdx, 0);
+                int endOffset = offsetOf(tableIdx, safeLongToInt(sliceInfo.getRowCount()));
 
                 strDataLen[tableIdx] = endOffset - offset;
                 totalStrDataLen += strDataLen[tableIdx];
@@ -155,9 +155,8 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
             SliceInfo sliceInfo = sliceInfoOf(tableIdx);
             if (sliceInfo.getRowCount() > 0) {
                 if (updateSliceInfo) {
-                    IntBuffer offsetBuffer = offsetBufferOf(tableIdx);
-                    int startOffset = offsetBuffer.get(0);
-                    int endOffset = offsetBuffer.get(safeLongToInt(sliceInfo.getRowCount()));
+                    int startOffset = offsetOf(tableIdx, 0);
+                    int endOffset = offsetOf(tableIdx, safeLongToInt(sliceInfo.getRowCount()));
                     int rowCount = endOffset - startOffset;
                     totalRowCount += rowCount;
 
@@ -209,29 +208,51 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
         return sliceInfoStack[tableIdx].getLast();
     }
 
-    protected IntBuffer offsetBufferOf(int tableIdx) {
-        long startOffset = currentOffsetOffsets[tableIdx];
-        int length = safeLongToInt((sliceInfoOf(tableIdx).getRowCount() + 1) * Integer.BYTES);
-        return tables.get(tableIdx)
-                .getBuffer()
-                .asByteBuffer(startOffset, length)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .asIntBuffer();
+    protected HostMemoryBuffer memoryBufferOf(int tableIdx) {
+        return tables.get(tableIdx).getBuffer();
     }
 
-    protected HostMemoryBuffer validityBufferOf(int tableIdx) {
+//    protected IntBuffer offsetBufferOf(int tableIdx) {
+//        long startOffset = currentOffsetOffsets[tableIdx];
+//        int length = safeLongToInt((sliceInfoOf(tableIdx).getRowCount() + 1) * Integer.BYTES);
+//        return tables.get(tableIdx)
+//                .getBuffer()
+//                .asByteBuffer(startOffset, length)
+//                .order(ByteOrder.LITTLE_ENDIAN)
+//                .asIntBuffer();
+//    }
+
+    protected int offsetOf(int tableIdx, long rowIdx) {
+        long startOffset = currentOffsetOffsets[tableIdx];
+        return tables.get(tableIdx).getBuffer().getInt(startOffset + rowIdx * Integer.BYTES);
+    }
+
+//    protected HostMemoryBuffer validityBufferOf(int tableIdx) {
+//        if (tables.get(tableIdx).getHeader().hasValidityBuffer(currentIdx)) {
+//            long startOffset = currentValidityOffsets[tableIdx];
+//            long length = sliceInfoOf(tableIdx).getValidityBufferInfo().getBufferLength();
+//            return tables.get(tableIdx).getBuffer().slice(startOffset, length);
+//        } else {
+//            return null;
+//        }
+//    }
+
+    protected long validifyBufferOffset(int tableIdx) {
         if (tables.get(tableIdx).getHeader().hasValidityBuffer(currentIdx)) {
-            long startOffset = currentValidityOffsets[tableIdx];
-            long length = sliceInfoOf(tableIdx).getValidityBufferInfo().getBufferLength();
-            return tables.get(tableIdx).getBuffer().slice(startOffset, length);
+            return currentValidityOffsets[tableIdx];
         } else {
-            return null;
+            return -1;
         }
     }
 
-    protected HostMemoryBuffer dataBufferOf(int tableIdx, int dataLen) {
+//    protected HostMemoryBuffer dataBufferOf(int tableIdx, int dataLen) {
+//        long startOffset = currentDataOffset[tableIdx];
+//        return tables.get(tableIdx).getBuffer().slice(startOffset, dataLen);
+//    }
+
+    protected void copyDataBuffer(HostMemoryBuffer dst, long dstOffset, int tableIdx, int dataLen) {
         long startOffset = currentDataOffset[tableIdx];
-        return tables.get(tableIdx).getBuffer().slice(startOffset, dataLen);
+        dst.copyFromHostBuffer(dstOffset, tables.get(tableIdx).getBuffer(), startOffset, dataLen);
     }
 
     protected long getTotalStrDataLen() {
