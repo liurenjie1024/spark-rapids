@@ -22,7 +22,6 @@ public class MergedInfoCalc extends MultiTableVisitor<Void, Void> {
 
     public MergedInfoCalc(List<SerializedTable> tables) {
         super(tables);
-
         this.totalDataLen = 0;
         this.columnOffsets = new ArrayList<>(tables.get(0).getHeader().getNumColumns()) ;
     }
