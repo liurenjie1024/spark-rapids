@@ -36,3 +36,4 @@ scalastyle.txt
 target/
 cufile.log
 output/
+build/*.class

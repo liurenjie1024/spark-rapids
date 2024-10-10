@@ -55,7 +55,6 @@ class GpuExpandExecMeta(
     val projections = gpuProjections.map(_.map(_.convertToGpu()))
     GpuExpandExec(projections, expand.output, childPlans.head.convertIfNeeded())(
       preprojectEnabled = conf.isExpandPreprojectEnabled,
-      cacheNullMaxCount = conf.expandCachingNullVecMaxCount,
       coalesceAfter = conf.isCoalesceAfterExpandEnabled)
   }
 }
@@ -68,19 +67,19 @@ class GpuExpandExecMeta(
  *                    output the same schema specified bye the parameter `output`
  * @param output      Attribute references to Output
  * @param child       Child operator
+ * @param preprojectEnabled Whether to enable pre-project before expanding
+ * @param coalesceAfter Whether to coalesce the output batches
  */
 case class GpuExpandExec(
     projections: Seq[Seq[Expression]],
     output: Seq[Attribute],
     child: SparkPlan)(
     preprojectEnabled: Boolean = false,
-    cacheNullMaxCount: Int = 0,
     override val coalesceAfter: Boolean = true
 ) extends ShimUnaryExecNode with GpuExec {
 
   override def otherCopyArgs: Seq[AnyRef] = Seq[AnyRef](
     preprojectEnabled.asInstanceOf[java.lang.Boolean],
-    cacheNullMaxCount.asInstanceOf[java.lang.Integer],
     coalesceAfter.asInstanceOf[java.lang.Boolean]
   )
 

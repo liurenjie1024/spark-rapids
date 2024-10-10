@@ -423,6 +423,7 @@ private final class GpuSemaphore(val checkVoluntaryGpuRelease: Boolean) extends 
     val taskAttemptId = context.taskAttemptId()
     GpuTaskMetrics.get.updateRetry(taskAttemptId)
     voluntaryReleaseForbiddenRecords.remove(taskAttemptId)
+    GpuTaskMetrics.get.updateMaxMemory(taskAttemptId)
     val refs = tasks.remove(taskAttemptId)
     if (refs == null) {
       throw new IllegalStateException(s"Completion of unknown task $taskAttemptId")

@@ -1262,15 +1262,7 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .doc("When set to false disables the coalesce after GPU Expand. ")
     .internal()
     .booleanConf
-    .createWithDefault(false)
-
-  val EXPAND_CACHING_NULL_VEC_MAX_NULL_COUNT =
-    conf("spark.rapids.sql.expandCachingNullVec.maxNulls")
-    .doc("Max number of null scalar in null vectors to cache for GPU Expand. " +
-      "If the number of null scala exceeds this value, the null vectors will not be cached." +
-      "The value has to be positive for caching to be enabled.")
-    .internal().integerConf
-    .createWithDefault(0)
+    .createWithDefault(true)
 
   val ENABLE_ORC_FLOAT_TYPES_TO_STRING =
     conf("spark.rapids.sql.format.orc.floatTypesToString.enable")
@@ -2556,7 +2548,7 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
         |On startup use: `--conf [conf key]=[conf value]`. For example:
         |
         |```
-        |${SPARK_HOME}/bin/spark-shell --jars rapids-4-spark_2.12-24.10.0-SNAPSHOT-cuda11.jar \
+        |${SPARK_HOME}/bin/spark-shell --jars rapids-4-spark_2.12-24.12.0-SNAPSHOT-cuda11.jar \
         |--conf spark.plugins=com.nvidia.spark.SQLPlugin \
         |--conf spark.rapids.sql.concurrentGpuTasks=2
         |```
@@ -3006,8 +2998,11 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
 
   lazy val isCoalesceAfterExpandEnabled: Boolean = get(ENABLE_COALESCE_AFTER_EXPAND)
 
+<<<<<<< HEAD
   lazy val expandCachingNullVecMaxCount: Int = get(EXPAND_CACHING_NULL_VEC_MAX_NULL_COUNT)
 
+=======
+>>>>>>> github/branch-24.12
   lazy val multiThreadReadNumThreads: Int = {
     // Use the largest value set among all the options.
     val deprecatedConfs = Seq(
