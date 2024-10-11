@@ -132,7 +132,7 @@ case class GpuExpandExec(
     }
 
     child.executeColumnar().mapPartitions { it =>
-      new GpuExpandIterator(boundProjections, metricsMap, preprojectIter(it), cacheNullMaxCount)
+      new GpuExpandIterator(boundProjections, metricsMap, preprojectIter(it))
     }
   }
 
@@ -196,8 +196,7 @@ case class GpuExpandExec(
 class GpuExpandIterator(
     boundProjections: Seq[GpuTieredProject],
     metrics: Map[String, GpuMetric],
-    it: Iterator[ColumnarBatch],
-    cacheNullMaxCount: Int)
+    it: Iterator[ColumnarBatch])
   extends Iterator[ColumnarBatch] {
 
   private var sb: Option[SpillableColumnarBatch] = None
@@ -212,19 +211,8 @@ class GpuExpandIterator(
   Option(TaskContext.get()).foreach { tc =>
     onTaskCompletion(tc) {
       sb.foreach(_.close())
-
-      if (cacheNullMaxCount > 0) {
-        import scala.collection.JavaConverters._
-        GpuExpressionsUtils.cachedNullVectors.get().values().asScala.foreach(_.close())
-        GpuExpressionsUtils.cachedNullVectors.get().clear()
-      }
     }
   }
-
-  if (cacheNullMaxCount > 0 && GpuExpressionsUtils.cachedNullVectors.get() == null) {
-    GpuExpressionsUtils.cachedNullVectors.set(new NullVecCache(cacheNullMaxCount))
-  }
-
 
   override def hasNext: Boolean = sb.isDefined || it.hasNext
 
