@@ -2998,11 +2998,6 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
 
   lazy val isCoalesceAfterExpandEnabled: Boolean = get(ENABLE_COALESCE_AFTER_EXPAND)
 
-<<<<<<< HEAD
-  lazy val expandCachingNullVecMaxCount: Int = get(EXPAND_CACHING_NULL_VEC_MAX_NULL_COUNT)
-
-=======
->>>>>>> github/branch-24.12
   lazy val multiThreadReadNumThreads: Int = {
     // Use the largest value set among all the options.
     val deprecatedConfs = Seq(
