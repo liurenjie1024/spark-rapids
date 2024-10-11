@@ -128,10 +128,13 @@ case class VeloxFileSourceScanExec(
   private val nativeMetrics = Map[String, () => GpuMetric](
     "C2COutputBatches" -> (() => createMetric(MODERATE_LEVEL, "C2COutputBatches")),
     "VeloxOutputBatches" -> (() => createMetric(MODERATE_LEVEL, "VeloxOutputBatches")),
-    "OutputSizeInBytes" -> (() => createMetric(MODERATE_LEVEL, "OutputSizeInBytes")),
+    "C2COutputSize" -> (() => createSizeMetric(MODERATE_LEVEL, "C2COutputSize")),
     "C2CTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "C2CTime")),
     "C2CStreamTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "C2CStreamTime")),
-    "H2DTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "H2DTime")),
+    "PageableH2DTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "PageableH2DTime")),
+    "PinnedH2DTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "PinnedH2DTime")),
+    "PageableH2DSize" -> (() => createSizeMetric(MODERATE_LEVEL, "PageableH2DSize")),
+    "PinnedH2DSize" -> (() => createSizeMetric(MODERATE_LEVEL, "PinnedH2DSize")),
   )
   private val preloadingMetrics = Map[String, () => GpuMetric](
     "preloadWaitTime" -> (() => createNanoTimingMetric(MODERATE_LEVEL, "preloadWaitTime"))
@@ -148,33 +151,32 @@ case class VeloxFileSourceScanExec(
   )
 
   override lazy val allMetrics: Map[String, GpuMetric] = {
-    val mapBuilder = mutable.Map[String, GpuMetric](
-      "scanTime" -> createTimingMetric(ESSENTIAL_LEVEL, "TotalTime")
-    )
+    val mapBuilder = Map.newBuilder[String, GpuMetric]
+    mapBuilder += "scanTime" -> createTimingMetric(ESSENTIAL_LEVEL, "TotalTime")
     // Add common embedded metrics
     commonMetrics.foreach { case (key, generator) =>
-      mapBuilder(key) = generator()
+      mapBuilder += key -> generator()
     }
     // NativeConverter and RoundTripConverter uses different metrics
     if (rapidsConf.enableNativeVeloxConverter) {
       nativeMetrics.foreach { case (key, generator) =>
-        mapBuilder(key) = generator()
+        mapBuilder += key -> generator()
       }
       if (rapidsConf.parquetVeloxPreloadCapacity > 0) {
         preloadingMetrics.foreach { case (key, generator) =>
-          mapBuilder(key) = generator()
+          mapBuilder += key -> generator()
         }
       }
     } else {
       roundTripMetrics.foreach { case (key, generator) =>
-        mapBuilder(key) = generator()
+        mapBuilder += key -> generator()
       }
     }
     // Expose all metrics of the underlying GlutenScanExec
     glutenScan.metrics.foreach { case (key, metric) =>
       mapBuilder += s"GLUTEN_$key" -> GpuMetric.wrap(metric)
     }
-    mapBuilder.toMap
+    mapBuilder.result()
   }
 
   override protected def doExecute(): RDD[InternalRow] =

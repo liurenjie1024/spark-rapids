@@ -14,7 +14,7 @@ package com.nvidia.spark.rapids.velox
 
 import scala.collection.mutable
 
-import ai.rapids.cudf.{DType, HostColumnVector, HostColumnVectorCore, HostMemoryBuffer}
+import ai.rapids.cudf.{DType, HostColumnVector, HostColumnVectorCore, HostMemoryBuffer, PinnedMemoryPool}
 import ai.rapids.cudf.DType.DTypeEnum
 import io.glutenproject.columnarbatch.IndicatorVector
 import io.glutenproject.rapids.GlutenJniWrapper
@@ -33,37 +33,61 @@ case class SampleColumnInfo(posInSchema: Int,
                             dataSize: Int,
                             children: Seq[SampleColumnInfo])
 
-case class VectorBuilder(posInSchema: Int,
-                         isRoot: Boolean,
+case class RapidsHostColumn(vector: HostColumnVector, usePinnedMemory: Boolean, totalBytes: Long)
+
+private[velox] case class HostBufferInfo(buffer: HostMemoryBuffer, isPinned: Boolean)
+
+case class VectorBuilder(rootBufferInfo: Option[HostBufferInfo],
+                         posInSchema: Int,
                          field: StructField,
-                         nullBuffer: Option[HostMemoryBuffer],
-                         dataBuffer: Option[HostMemoryBuffer],
-                         offsetBuffer: Option[HostMemoryBuffer],
+                         nullBufOffset: Option[Long],
+                         dataBufOffset: Option[Long],
+                         offsetBufOffset: Option[Long],
                          children: Seq[VectorBuilder]) {
 
-  def build(tailInfo: Array[Long]): HostColumnVectorCore = {
+  def build(tailInfo: Array[Long]): RapidsHostColumn = {
+    require(rootBufferInfo.nonEmpty, "build should be only triggered on top-level columns")
+
+    val rootBuf = rootBufferInfo.get
+    try {
+      val (vector, actualTotalBytes) = buildImpl(tailInfo, rootBuf.buffer)
+      RapidsHostColumn(vector.asInstanceOf[HostColumnVector], rootBuf.isPinned, actualTotalBytes)
+    } finally {
+      // Close the shared root buffer after all child buffers have been built
+      rootBuf.buffer.close()
+    }
+  }
+
+  private def buildImpl(tailInfo: Array[Long],
+                        sharedBuffer: HostMemoryBuffer): (HostColumnVectorCore, Long) = {
+
+    var finalTotalBytes = 0L
     var childVecs = new java.util.ArrayList[HostColumnVectorCore]()
-    children.foreach(b => childVecs.add(b.build(tailInfo)))
+    children.foreach { b =>
+      val (childVec, childTotalSize)  = b.buildImpl(tailInfo, sharedBuffer)
+      childVecs.add(childVec)
+      finalTotalBytes += childTotalSize
+    }
 
     val dType = VeloxBatchConverter.mapSparkTypeToDType(field.dataType)
     val rowCount = tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 2))
     val nullCount = java.util.Optional.of(java.lang.Long.valueOf(
       tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 3))))
 
-    val finalDataBuffer = dataBuffer.map { buf =>
-      val f = buf.slice(0, tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 0)))
-      buf.close()
-      f
+    val dataBuffer = dataBufOffset.map { offset =>
+      val finalLength = tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 0))
+      finalTotalBytes += finalLength
+      sharedBuffer.slice(offset, finalLength)
     }
-    val finalOffsetBuffer = offsetBuffer.map { buf =>
-      val f = buf.slice(0, tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 1)))
-      buf.close()
-      f
+    val offsetBuffer = offsetBufOffset.map { offset =>
+      val finalLength = tailInfo(VectorBuilder.getTailInfoPos(posInSchema, 1))
+      finalTotalBytes += finalLength
+      sharedBuffer.slice(offset, finalLength)
     }
-    val finalNullBuffer = nullBuffer.map { buf =>
-      val f = buf.slice(0, VeloxBatchConverter.sizeOfNullMask(rowCount.toInt))
-      buf.close()
-      f
+    val nullBuffer = nullBufOffset.map { offset =>
+      val finalLength = VeloxBatchConverter.sizeOfNullMask(rowCount.toInt)
+      finalTotalBytes += finalLength
+      sharedBuffer.slice(offset, finalLength)
     }
 
     // Cast Map[child0, child1] => List[Struct[child0, child1]]
@@ -75,15 +99,16 @@ case class VectorBuilder(posInSchema: Int,
       childVecs.add(structCol)
     }
 
-    if (isRoot) {
+    val vector: HostColumnVectorCore = if (rootBufferInfo.nonEmpty) {
       new HostColumnVector(dType, rowCount, nullCount,
-        finalDataBuffer.orNull, finalNullBuffer.orNull, finalOffsetBuffer.orNull,
+        dataBuffer.orNull, nullBuffer.orNull, offsetBuffer.orNull,
         childVecs)
     } else {
       new HostColumnVectorCore(dType, rowCount, nullCount,
-        finalDataBuffer.orNull, finalNullBuffer.orNull, finalOffsetBuffer.orNull,
+        dataBuffer.orNull, nullBuffer.orNull, offsetBuffer.orNull,
         childVecs)
     }
+    (vector, finalTotalBytes)
   }
 }
 
@@ -165,12 +190,11 @@ class VeloxBatchConverter(runtime: GlutenJniWrapper,
     val bufferPtrs = mutable.ArrayBuffer[Long]()
     bufferPtrs.append(0L)
     decodedSampleInfo.foreach { rootInfo =>
-      val vecBuilder = createVectorBuilder(
+      columnBuilders += createVectorBuilder(
         bufferPtrs,
         estimatedBatchNum,
-        rootInfo,
-        isRoot = true)
-      columnBuilders += vecBuilder
+        rootInfo
+      )
     }
     bufferPtrs(0) = bufferPtrs.length
 
@@ -187,67 +211,122 @@ class VeloxBatchConverter(runtime: GlutenJniWrapper,
    * Truncate buffer according to the tail address got from native converter. And group up these
    * buffers as HostColumnVectors with the rowCount and nullCount also got from the native side.
    */
-  def flushAndConvert(): Array[HostColumnVector] = {
+  def flushAndConvert(): Array[RapidsHostColumn] = {
     require(columnBuilders.nonEmpty, "ColumnBuilders has NOT been setup")
     val start: Long = System.nanoTime()
 
     val tailInfo = runtime.flush(nativeHandle)
-    metrics("OutputSizeInBytes") += tailInfo(1)
+    metrics("C2COutputSize") += tailInfo(1)
     VeloxBatchConverter.nativeMetaPrettyPrint(
       "TailInfoFlush", tailInfo, VectorBuilder.TAIL_INFO_OFFSET, VectorBuilder.TAIL_INFO_STRIDE)
-    val ret = columnBuilders.map(_.build(tailInfo).asInstanceOf[HostColumnVector])
+    val ret = columnBuilders.map(_.build(tailInfo))
     columnBuilders.clear()
 
     eclipsed += System.nanoTime() - start
     ret.toArray
   }
 
+  // Instead of allocating memory for each buffer, allocating a united memory buffer which can be
+  // shared by all buffers (including buffers for nested children). With this approach, we can
+  // easily distinguish if a (top-level) field based on PinnedMemory or PageableMemory. And setup
+  // different metrics specialized for PinnedMemory_H2D and PageableMemory_H2D.
   private def createVectorBuilder(bufferPtrs: mutable.ArrayBuffer[Long],
                                   estimatedBatchNum: Double,
-                                  info: SampleColumnInfo,
-                                  isRoot: Boolean): VectorBuilder = {
+                                  rootInfo: SampleColumnInfo): VectorBuilder = {
 
-    require(VeloxDataTypes.canConvert(info.veloxType, info.readType.dataType),
-      s"can NOT convert ${info.veloxType} to ${info.readType.dataType}")
+    def impl(localOffset: Long, info: SampleColumnInfo): (VectorBuilder, Long) = {
+      require(VeloxDataTypes.canConvert(info.veloxType, info.readType.dataType),
+        s"can NOT convert ${info.veloxType} to ${info.readType.dataType}")
 
-    val nullBuffer = if (info.readType.nullable) {
-      val estimatedRows = (info.numRows * estimatedBatchNum).toInt
-      val nullMaskBytes = VeloxBatchConverter.sizeOfNullMask(estimatedRows)
-      Some(HostMemoryBuffer.allocate(nullMaskBytes))
-    } else {
-      None
-    }
-    val dataBuffer = if (info.dataSize > 0) {
-      val estimatedDataSize = (info.dataSize * estimatedBatchNum).toInt
-      Some(HostMemoryBuffer.allocate(estimatedDataSize))
-    } else {
-      None
-    }
-    val offsetBuffer = if (info.offsetsSize > 0) {
-      val estimatedOffsetSize = (info.offsetsSize * estimatedBatchNum).toInt
-      Some(HostMemoryBuffer.allocate(estimatedOffsetSize))
-    } else {
-      None
+      var offset = localOffset
+      // The schema within each vector: [type, dataBuffer, nullBuffer, offsetBuffer]
+      // Firstly, push the TypeIndex
+      bufferPtrs += VeloxDataTypes.encodeSparkType(info.readType.dataType).toLong
+      // Then, the offset and length of dataBuffer
+      val dataOffset: Option[Long] = if (info.dataSize > 0) {
+        val estDataSize = (info.dataSize * estimatedBatchNum).toLong
+        bufferPtrs.append(offset, estDataSize)
+        offset += estDataSize
+        Some(offset - estDataSize)
+      } else {
+        bufferPtrs.append(-1L, 0L)
+        None
+      }
+      // After that, the offset and length of nullBuffer
+      val nullOffset: Option[Long] = if (info.readType.nullable) {
+        val estimatedRows = (info.numRows * estimatedBatchNum).toInt
+        val estNullMaskBytes = VeloxBatchConverter.sizeOfNullMask(estimatedRows).toLong
+        bufferPtrs.append(offset, estNullMaskBytes)
+        offset += estNullMaskBytes
+        Some(offset - estNullMaskBytes)
+      } else {
+        bufferPtrs.append(-1L, 0L)
+        None
+      }
+      // Finally, the offset and length of offsetBuffer
+      val offsetOffset: Option[Long] = if (info.offsetsSize > 0) {
+        val estOffsetSize = (info.offsetsSize * estimatedBatchNum).toLong
+        bufferPtrs.append(offset, estOffsetSize)
+        offset += estOffsetSize
+        Some(offset - estOffsetSize)
+      } else {
+        bufferPtrs.append(-1L, 0L)
+        None
+      }
+
+      // bufferPtrs is in pre-order
+      val childBuilders = info.children.map { ch =>
+        val (builder, newOffset) = impl(offset, ch)
+        offset = newOffset
+        builder
+      }
+
+      (VectorBuilder(None, info.posInSchema, info.readType,
+        nullOffset, dataOffset, offsetOffset,
+        childBuilders), offset)
     }
 
-    // bufferPtrs is in pre-order
-    val typeIdx = VeloxDataTypes.encodeSparkType(info.readType.dataType).toLong
-    bufferPtrs.append(
-      typeIdx,
-      dataBuffer.map(_.getAddress).getOrElse(0L),
-      dataBuffer.map(_.getLength).getOrElse(0L),
-      nullBuffer.map(_.getAddress).getOrElse(0L),
-      nullBuffer.map(_.getLength).getOrElse(0L),
-      offsetBuffer.map(_.getAddress).getOrElse(0L),
-      offsetBuffer.map(_.getLength).getOrElse(0L),
+    // Record the start point of bufferPtrs
+    val bufferPtrsStart = bufferPtrs.length
+    // Create non-root builders while computing the total size
+    val (tmpRootBuilder, totalBytes) = impl(0, rootInfo)
+
+    // Try allocate from PinnedMemoryPool. Fallback to PageableMemory if failed.
+    val bufferInfo = PinnedMemoryPool.tryAllocate(totalBytes) match {
+      case buf if buf == null =>
+        HostBufferInfo(HostMemoryBuffer.allocate(totalBytes, false), isPinned = false)
+      case buf =>
+        HostBufferInfo(buf, isPinned = true)
+    }
+
+    // Replace local offsets with absolute memory address
+    val addr = bufferInfo.buffer.getAddress
+    (bufferPtrsStart until bufferPtrs.length by 7).foreach { i =>
+      // dataAddr
+      bufferPtrs(i + 1) = bufferPtrs(i + 1) match {
+        case -1L => 0L
+        case localOffset => localOffset + addr
+      }
+      // nullAddr
+      bufferPtrs(i + 3) = bufferPtrs(i + 3) match {
+        case -1L => 0L
+        case localOffset => localOffset + addr
+      }
+      // offsetAddr
+      bufferPtrs(i + 5) = bufferPtrs(i + 5) match {
+        case -1L => 0L
+        case localOffset => localOffset + addr
+      }
+    }
+
+    VectorBuilder(Some(bufferInfo),
+      tmpRootBuilder.posInSchema,
+      tmpRootBuilder.field,
+      tmpRootBuilder.nullBufOffset,
+      tmpRootBuilder.dataBufOffset,
+      tmpRootBuilder.offsetBufOffset,
+      tmpRootBuilder.children
     )
-
-    val childBuilders = info.children.map(ch => createVectorBuilder(
-      bufferPtrs, estimatedBatchNum, ch, isRoot = false))
-
-    VectorBuilder(info.posInSchema, isRoot, info.readType,
-      nullBuffer, dataBuffer, offsetBuffer,
-      childBuilders)
   }
 }
 
