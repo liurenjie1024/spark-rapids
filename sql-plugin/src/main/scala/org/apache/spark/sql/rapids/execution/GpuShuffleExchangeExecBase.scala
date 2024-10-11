@@ -212,7 +212,9 @@ abstract class GpuShuffleExchangeExecBase(
     "rapidsShufflePartitionTime" ->
       createNanoTimingMetric(DEBUG_LEVEL, "rs. shuffle partition time"),
     "rapidsShuffleReadTime" ->
-        createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time")
+        createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time"),
+    GpuPartitioning.MEM_COPY_TIME ->
+        createNanoTimingMetric(MODERATE_LEVEL, "rs. copy to host time")
   ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics)
 
   // Spark doesn't report totalTime for this operator so we override metrics
@@ -326,6 +328,10 @@ object GpuShuffleExchangeExecBase {
       rdd
     }
     val partitioner: GpuExpression = getPartitioner(newRdd, outputAttributes, newPartitioning)
+    // Inject detailed Metrics, such as D2HTime before SliceOnCpu
+    // The injected metrics will be serialized as the members of GpuPartitioning
+    partitioner.asInstanceOf[GpuPartitioning].setupMetrics(additionalMetrics)
+
     def getPartitioned: ColumnarBatch => Any = {
       val partitionMetric = metrics("rapidsShufflePartitionTime")
       batch => partitionMetric.ns(partitioner.columnarEvalAny(batch))

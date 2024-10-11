@@ -1620,7 +1620,7 @@ trait ParquetPartitionReaderBase extends Logging with ScanWithMetrics
         // by veloxHDFS
         val ptr = rt.openHadoopFile(filePathString)
         if (ptr == 0L) {
-          logInfo(s"failed to open file($filePathString) via VeloxHDFS")
+          logError(s"failed to open file($filePathString) via VeloxHDFS")
         }
         ptr
       } else {

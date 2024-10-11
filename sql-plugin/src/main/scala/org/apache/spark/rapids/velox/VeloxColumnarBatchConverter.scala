@@ -16,11 +16,11 @@
 
 package org.apache.spark.rapids.velox
 
-import ai.rapids.cudf.{HostColumnVector, NvtxColor}
+import ai.rapids.cudf.NvtxColor
 import com.nvidia.spark.rapids.{AcquireFailed, CoalesceSizeGoal, CudfRowTransitions, GeneratedInternalRowToCudfRowIterator, GpuColumnVector, GpuMetric, GpuRowToColumnConverter, GpuSemaphore, NvtxWithMetrics, RowToColumnarIterator}
 import com.nvidia.spark.rapids.Arm._
 import com.nvidia.spark.rapids.RapidsPluginImplicits.AutoCloseableProducingArray
-import com.nvidia.spark.rapids.velox.VeloxBatchConverter
+import com.nvidia.spark.rapids.velox.{RapidsHostColumn, VeloxBatchConverter}
 import io.glutenproject.execution.VeloxColumnarToRowExec
 import io.glutenproject.rapids.GlutenJniWrapper
 
@@ -35,14 +35,14 @@ class CoalesceNativeConverter(veloxIter: Iterator[ColumnarBatch],
                               targetBatchSizeInBytes: Int,
                               schema: StructType,
                               metrics: Map[String, GpuMetric])
-  extends Iterator[Array[HostColumnVector]] with Logging {
+  extends Iterator[Array[RapidsHostColumn]] with Logging {
 
   private var converterImpl: Option[VeloxBatchConverter] = None
 
   private var srcExhausted = false
 
   private val c2cMetrics = Map(
-    "OutputSizeInBytes" -> GpuMetric.unwrap(metrics("OutputSizeInBytes")))
+    "C2COutputSize" -> GpuMetric.unwrap(metrics("C2COutputSize")))
 
   @transient private var runtime: GlutenJniWrapper = _
 
@@ -75,7 +75,7 @@ class CoalesceNativeConverter(veloxIter: Iterator[ColumnarBatch],
     ret
   }
 
-  override def next(): Array[HostColumnVector] = {
+  override def next(): Array[RapidsHostColumn] = {
     val ntvx = new NvtxWithMetrics("VeloxC2CNext", NvtxColor.YELLOW, metrics("C2CStreamTime"))
     withResource(ntvx) { _ =>
       while (true) {
@@ -125,7 +125,7 @@ class CoalesceNativeConverter(veloxIter: Iterator[ColumnarBatch],
 
 object VeloxColumnarBatchConverter extends Logging {
 
-  def hostToDevice(hostIter: Iterator[Array[HostColumnVector]],
+  def hostToDevice(hostIter: Iterator[Array[RapidsHostColumn]],
                    outputAttr: Seq[Attribute],
                    metrics: Map[String, GpuMetric]): Iterator[ColumnarBatch] = {
     val dataTypes = outputAttr.map(_.dataType).toArray
@@ -141,16 +141,24 @@ object VeloxColumnarBatchConverter extends Logging {
           case _ =>
         }
       }
-      withResource(new NvtxWithMetrics("HostToDeviceC2C", NvtxColor.BLUE,
-        metrics("H2DTime"))) { _ =>
-        val deviceVectors: Array[ColumnVector] =
-          hostVectors.zip(dataTypes).safeMap { case (hcv, dt) =>
-            withResource(hcv) { _ =>
+
+      val deviceVectors: Array[ColumnVector] = hostVectors.zip(dataTypes).safeMap {
+        case (RapidsHostColumn(hcv, isPinned, totalBytes), dt) =>
+          val nvtxMetric = if (isPinned) {
+            metrics("PinnedH2DSize") += totalBytes
+            new NvtxWithMetrics("pinnedH2D", NvtxColor.DARK_GREEN, metrics("PinnedH2DTime"))
+          } else {
+            metrics("PageableH2DSize") += totalBytes
+            new NvtxWithMetrics("PageableH2D", NvtxColor.GREEN, metrics("PageableH2DTime"))
+          }
+          withResource(hcv) { _ =>
+            withResource(nvtxMetric) { _ =>
               GpuColumnVector.from(hcv.copyToDevice(), dt)
             }
           }
-        new ColumnarBatch(deviceVectors, hostVectors.head.getRowCount.toInt)
       }
+
+      new ColumnarBatch(deviceVectors, hostVectors.head.vector.getRowCount.toInt)
     }
   }
 

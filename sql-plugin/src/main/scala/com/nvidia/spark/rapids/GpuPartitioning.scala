@@ -33,6 +33,9 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 object GpuPartitioning {
   // The maximum size of an Array minus a bit for overhead for metadata
   val MaxCpuBatchSize = 2147483639L - 2048L
+
+  // The SQLMetric key for MemoryCopyFromDeviceToHost
+  val MEM_COPY_TIME: String = "d2hMemCpyTime"
 }
 
 trait GpuPartitioning extends Partitioning {
@@ -225,13 +228,22 @@ trait GpuPartitioning extends Partitioning {
     val totalInputSize = GpuColumnVector.getTotalDeviceMemoryUsed(partitionColumns)
     val mightNeedToSplit = totalInputSize > GpuPartitioning.MaxCpuBatchSize
 
-    val hostPartColumns = withResource(partitionColumns) { _ =>
-      withRetryNoSplit {
-        partitionColumns.safeMap(_.copyToHostAsync(Cuda.DEFAULT_STREAM))
+    val memCpyNvtxRange = memCopyTime.map { m =>
+      new NvtxWithMetrics("PartD2H", NvtxColor.CYAN, m)
+    }.getOrElse {
+      new NvtxRange("PartD2H", NvtxColor.CYAN)
+    }
+    val hostPartColumns = closeOnExcept(memCpyNvtxRange) { _ =>
+      withResource(partitionColumns) { _ =>
+        withRetryNoSplit {
+          partitionColumns.safeMap(_.copyToHostAsync(Cuda.DEFAULT_STREAM))
+        }
       }
     }
     withResource(hostPartColumns) { _ =>
-      Cuda.DEFAULT_STREAM.sync()
+      withResource(memCpyNvtxRange) { _ =>
+        Cuda.DEFAULT_STREAM.sync()
+      }
       // Leaving the GPU for a while
       GpuSemaphore.voluntaryRelease(TaskContext.get())
 
@@ -339,6 +351,14 @@ trait GpuPartitioning extends Partitioning {
           outputBatches.append(GpuCompressedColumnVector.from(ct))
         }
       }
+    }
+  }
+
+  private var memCopyTime: Option[GpuMetric] = None
+
+  def setupMetrics(metrics: Map[String, GpuMetric]): Unit = {
+    metrics.get(GpuPartitioning.MEM_COPY_TIME).foreach { metric =>
+      memCopyTime = Some(metric)
     }
   }
 }

@@ -16,15 +16,15 @@
 
 package org.apache.spark.rapids.velox
 
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.locks.ReentrantLock
 
 import io.glutenproject.execution._
 import io.substrait.proto.Plan
 
-import ai.rapids.cudf.{HostColumnVector, NvtxColor}
+import ai.rapids.cudf.NvtxColor
 import com.nvidia.spark.rapids.{CoalesceSizeGoal, GpuMetric, GpuSemaphore, NvtxWithMetrics}
 import com.nvidia.spark.rapids.Arm.withResource
+import com.nvidia.spark.rapids.velox.RapidsHostColumn
 
 import org.apache.spark.{InterruptibleIterator, Partition, TaskContext}
 import org.apache.spark.internal.Logging
@@ -104,7 +104,7 @@ class VeloxParquetScanRDD(scanRDD: RDD[ColumnarBatch],
       val coalesceConverter = new CoalesceNativeConverter(
         veloxIter, coalesceGoal.targetSizeBytes.toInt, schema, metrics
       )
-      val hostIter: Iterator[Array[HostColumnVector]] = if (preloadedCapacity > 0) {
+      val hostIter: Iterator[Array[RapidsHostColumn]] = if (preloadedCapacity > 0) {
         val producerInitFn = () => {
           coalesceConverter.setRuntime()
         }
@@ -150,11 +150,11 @@ private class VeloxScanMetricsIter(iter: Iterator[ColumnarBatch],
 }
 
 private case class PreloadedIterator(taskAttId: Long,
-                                     iterImpl: Iterator[Array[HostColumnVector]],
+                                     iterImpl: Iterator[Array[RapidsHostColumn]],
                                      producerInitFn: () => Unit,
                                      capacity: Int,
                                      waitTimeMetric: GpuMetric
-                                    ) extends Iterator[Array[HostColumnVector]] with Logging {
+                                    ) extends Iterator[Array[RapidsHostColumn]] with Logging {
 
   @transient @volatile private var isInit: Boolean = false
   @transient @volatile private var isProducing: Boolean = false
@@ -169,8 +169,8 @@ private case class PreloadedIterator(taskAttId: Long,
 
   private var producer: Thread = _
 
-  @transient private lazy val buffer: Array[Either[Throwable, Array[HostColumnVector]]] = {
-    Array.ofDim[Either[Throwable, Array[HostColumnVector]]](capacity)
+  @transient private lazy val buffer: Array[Either[Throwable, Array[RapidsHostColumn]]] = {
+    Array.ofDim[Either[Throwable, Array[RapidsHostColumn]]](capacity)
   }
 
   @transient private lazy val produceFn: Runnable = new Runnable {
@@ -225,15 +225,17 @@ private case class PreloadedIterator(taskAttId: Long,
 
   override def hasNext: Boolean = {
     if (!isInit) {
-      if (!iterImpl.hasNext) {
-        return false
+      withResource(new NvtxWithMetrics("waitForCPU", NvtxColor.RED, waitTimeMetric)) { _ =>
+        if (!iterImpl.hasNext) {
+          return false
+        }
+        isInit = true
+        isProducing = true
+        producerInitFn()
+        producer = new Thread(produceFn)
+        producer.start()
+        return true
       }
-      isInit = true
-      isProducing = true
-      producerInitFn()
-      producer = new Thread(produceFn)
-      producer.start()
-      return true
     }
 
     writeIndex > readIndex || {
@@ -244,7 +246,7 @@ private case class PreloadedIterator(taskAttId: Long,
     }
   }
 
-  override def next(): Array[HostColumnVector] = {
+  override def next(): Array[RapidsHostColumn] = {
     if (writeIndex == readIndex) {
       GpuSemaphore.releaseIfNecessary(TaskContext.get())
       withResource(new NvtxWithMetrics("waitForCPU", NvtxColor.RED, waitTimeMetric)) { _ =>
@@ -266,7 +268,7 @@ private case class PreloadedIterator(taskAttId: Long,
       case Left(ex: Throwable) =>
         logError(s"[$taskAttId] PreloadedIterator: AsyncProducer failed with exceptions")
         throw new RuntimeException(s"[$taskAttId] PreloadedIterator", ex)
-      case Right(ret: Array[HostColumnVector]) =>
+      case Right(ret: Array[RapidsHostColumn]) =>
         logError(s"[$taskAttId] PreloadedIterator consumed $readIndex batches, " +
           s"currently preloaded batchNum: ${writeIndex - readIndex}")
         ret
