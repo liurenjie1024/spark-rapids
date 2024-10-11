@@ -298,7 +298,7 @@ private final class SemaphoreTaskInfo(val taskAttemptId: Long) extends Logging {
     }
   }
 
-  def tryAcquire(semaphore: GpuBackingSemaphore): Boolean = synchronized {
+  def tryAcquire(semaphore: GpuBackingSemaphore, taskAttemptId: Long): Boolean = synchronized {
     val t = Thread.currentThread()
     if (hasSemaphore) {
       activeThreads.add(t)
@@ -306,7 +306,7 @@ private final class SemaphoreTaskInfo(val taskAttemptId: Long) extends Logging {
     } else {
       if (blockedThreads.size() == 0) {
         // No other threads for this task are waiting, so we might be able to grab this directly
-        val ret = semaphore.tryAcquire(numPermits, lastHeld)
+        val ret = semaphore.tryAcquire(numPermits, lastHeld, taskAttemptId)
         if (ret) {
           hasSemaphore = true
           activeThreads.add(t)
@@ -355,7 +355,7 @@ private final class GpuSemaphore(val checkVoluntaryGpuRelease: Boolean) extends 
       onTaskCompletion(context, completeTask)
       new SemaphoreTaskInfo(taskAttemptId)
     })
-    if (taskInfo.tryAcquire(semaphore)) {
+    if (taskInfo.tryAcquire(semaphore, taskAttemptId)) {
       GpuDeviceManager.initializeFromTask()
       SemaphoreAcquired
     } else {
