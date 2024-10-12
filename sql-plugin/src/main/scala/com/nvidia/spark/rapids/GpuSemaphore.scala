@@ -180,7 +180,7 @@ object GpuSemaphore {
  * this is considered to be okay as there are other mechanisms in place, and it should be rather
  * rare.
  */
-private final class SemaphoreTaskInfo() extends Logging {
+private final class SemaphoreTaskInfo(val taskAttemptId: Long) extends Logging {
   /**
    * This holds threads that are not on the GPU yet. Most of the time they are
    * blocked waiting for the semaphore to let them on, but it may hold one
@@ -271,7 +271,7 @@ private final class SemaphoreTaskInfo() extends Logging {
         if (!done && shouldBlockOnSemaphore) {
           // We cannot be in a synchronized block and wait on the semaphore
           // so we have to release it and grab it again afterwards.
-          semaphore.acquire(numPermits, lastHeld)
+          semaphore.acquire(numPermits, lastHeld, taskAttemptId)
           synchronized {
             // We now own the semaphore so we need to wake up all of the other tasks that are
             // waiting.
@@ -298,7 +298,7 @@ private final class SemaphoreTaskInfo() extends Logging {
     }
   }
 
-  def tryAcquire(semaphore: GpuBackingSemaphore): Boolean = synchronized {
+  def tryAcquire(semaphore: GpuBackingSemaphore, taskAttemptId: Long): Boolean = synchronized {
     val t = Thread.currentThread()
     if (hasSemaphore) {
       activeThreads.add(t)
@@ -306,7 +306,7 @@ private final class SemaphoreTaskInfo() extends Logging {
     } else {
       if (blockedThreads.size() == 0) {
         // No other threads for this task are waiting, so we might be able to grab this directly
-        val ret = semaphore.tryAcquire(numPermits, lastHeld)
+        val ret = semaphore.tryAcquire(numPermits, lastHeld, taskAttemptId)
         if (ret) {
           hasSemaphore = true
           activeThreads.add(t)
@@ -353,9 +353,9 @@ private final class GpuSemaphore(val checkVoluntaryGpuRelease: Boolean) extends 
     val taskAttemptId = context.taskAttemptId()
     val taskInfo = tasks.computeIfAbsent(taskAttemptId, _ => {
       onTaskCompletion(context, completeTask)
-      new SemaphoreTaskInfo()
+      new SemaphoreTaskInfo(taskAttemptId)
     })
-    if (taskInfo.tryAcquire(semaphore)) {
+    if (taskInfo.tryAcquire(semaphore, taskAttemptId)) {
       GpuDeviceManager.initializeFromTask()
       SemaphoreAcquired
     } else {
@@ -377,7 +377,7 @@ private final class GpuSemaphore(val checkVoluntaryGpuRelease: Boolean) extends 
       val taskAttemptId = context.taskAttemptId()
       val taskInfo = tasks.computeIfAbsent(taskAttemptId, _ => {
         onTaskCompletion(context, completeTask)
-        new SemaphoreTaskInfo()
+        new SemaphoreTaskInfo(taskAttemptId)
       })
       taskInfo.blockUntilReady(semaphore)
       GpuDeviceManager.initializeFromTask()
