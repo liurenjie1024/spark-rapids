@@ -11,7 +11,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 
-import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padFor64byteAlignment;
+import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlignment;
 
 
 class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, SerializedTableHeader> {
@@ -46,7 +46,7 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
 
         long validityBufferLength = 0;
         if (col.hasValidityVector()) {
-            validityBufferLength = padFor64byteAlignment(parent.getValidityBufferInfo().getBufferLength());
+            validityBufferLength = padForHostAlignment(parent.getValidityBufferInfo().getBufferLength());
         }
 
         this.validityBufferLen += validityBufferLength;
@@ -63,12 +63,12 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
 
         long validityBufferLength = 0;
         if (col.hasValidityVector() && parent.rowCount > 0) {
-            validityBufferLength = padFor64byteAlignment(parent.getValidityBufferInfo().getBufferLength());
+            validityBufferLength = padForHostAlignment(parent.getValidityBufferInfo().getBufferLength());
         }
 
         long offsetBufferLength = 0;
         if (col.getOffsets() != null && parent.rowCount > 0) {
-            offsetBufferLength = padFor64byteAlignment((parent.rowCount + 1) * Integer.BYTES);
+            offsetBufferLength = padForHostAlignment((parent.rowCount + 1) * Integer.BYTES);
         }
 
         this.validityBufferLen += validityBufferLength;
@@ -123,13 +123,13 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
         switch (bufferType) {
             case VALIDITY:
                 if (col.hasValidityVector() && info.getRowCount() > 0) {
-                    return  padFor64byteAlignment(info.getValidityBufferInfo().getBufferLength());
+                    return  padForHostAlignment(info.getValidityBufferInfo().getBufferLength());
                 } else {
                     return 0;
                 }
             case OFFSET:
                 if (DType.STRING.equals(primitiveType.getType()) && info.getRowCount() > 0) {
-                    return padFor64byteAlignment((info.rowCount + 1) * Integer.BYTES);
+                    return padForHostAlignment((info.rowCount + 1) * Integer.BYTES);
                 } else {
                     return 0;
                 }
@@ -138,13 +138,13 @@ class SerializedTableHeaderCalc implements SchemaWithColumnsVisitor<Void, Serial
                     if (col.getOffsets() != null) {
                         long startByteOffset = col.getOffsets().getInt(info.offset * Integer.BYTES);
                         long endByteOffset = col.getOffsets().getInt((info.offset + info.rowCount) * Integer.BYTES);
-                        return padFor64byteAlignment(endByteOffset - startByteOffset);
+                        return padForHostAlignment(endByteOffset - startByteOffset);
                     } else {
                         return 0;
                     }
                 } else {
                     if (primitiveType.getType().getSizeInBytes() > 0) {
-                        return padFor64byteAlignment(primitiveType.getType().getSizeInBytes() * info.rowCount);
+                        return padForHostAlignment(primitiveType.getType().getSizeInBytes() * info.rowCount);
                     } else {
                         return 0;
                     }

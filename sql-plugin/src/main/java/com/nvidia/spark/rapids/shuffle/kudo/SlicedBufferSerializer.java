@@ -12,7 +12,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 
-import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padFor64byteAlignment;
+import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlignment;
 
 
 class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
@@ -127,7 +127,7 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
             long len = sliceInfo.getValidityBufferInfo().getBufferLength();
             writer.copyDataFrom(buff, sliceInfo.getValidityBufferInfo().getBufferOffset(),
                     len);
-            return padFor64byteAlignment(writer, len);
+            return padForHostAlignment(writer, len);
         } else {
             return 0;
         }
@@ -142,7 +142,7 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
         long srcOffset = sliceInfo.offset * Integer.BYTES;
         HostMemoryBuffer buff = column.getOffsets();
         writer.copyDataFrom(buff, srcOffset, bytesToCopy);
-        return padFor64byteAlignment(writer, bytesToCopy);
+        return padForHostAlignment(writer, bytesToCopy);
     }
 
     private long copySlicedData(HostColumnVectorCore column, SliceInfo sliceInfo) throws IOException {
@@ -161,13 +161,13 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
                     return 0;
                 } else {
                     writer.copyDataFrom(column.getData(), startByteOffset, bytesToCopy);
-                    return padFor64byteAlignment(writer, bytesToCopy);
+                    return padForHostAlignment(writer, bytesToCopy);
                 }
             } else if (type.getSizeInBytes() > 0) {
                 long bytesToCopy = sliceInfo.rowCount * type.getSizeInBytes();
                 long srcOffset = sliceInfo.offset * type.getSizeInBytes();
                 writer.copyDataFrom(column.getData(), srcOffset, bytesToCopy);
-                return padFor64byteAlignment(writer, bytesToCopy);
+                return padForHostAlignment(writer, bytesToCopy);
             } else {
                 return 0;
             }
