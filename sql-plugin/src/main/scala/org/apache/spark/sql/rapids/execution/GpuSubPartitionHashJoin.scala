@@ -18,7 +18,7 @@ package org.apache.spark.sql.rapids.execution
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
-import com.nvidia.spark.rapids.{GpuBatchUtils, GpuColumnVector, GpuExpression, GpuHashPartitioningBase, GpuMetric, HashMode, SpillableColumnarBatch, SpillPriorities, TaskAutoCloseableResource}
+import com.nvidia.spark.rapids.{GpuBatchUtils, GpuColumnVector, GpuExpression, GpuHashPartitioningBase, GpuMetric, HashMode, RmmRapidsRetryIterator, SpillableColumnarBatch, SpillPriorities, TaskAutoCloseableResource}
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 
@@ -182,7 +182,9 @@ class GpuBatchSubPartitioner(
           HashMode.MURMUR3, hashSeed)
         // 2) Split into smaller tables according to partitions
         val subTables = withResource(partedTable) { _ =>
-          partedTable.getTable.contiguousSplit(partedTable.getPartitions.tail: _*)
+          RmmRapidsRetryIterator.withRetryNoSplit {
+            partedTable.getTable.contiguousSplit(partedTable.getPartitions.tail: _*)
+          }
         }
         // 3) Make each smaller table spillable and cache them in the queue
         withResource(subTables) { _ =>
