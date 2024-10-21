@@ -5,17 +5,17 @@ import ai.rapids.cudf.DType;
 import ai.rapids.cudf.HostColumnVectorCore;
 import ai.rapids.cudf.HostMemoryBuffer;
 import ai.rapids.cudf.Schema;
-import com.nvidia.spark.rapids.shuffle.schema.SchemaWithColumnsVisitor;
+import com.nvidia.spark.rapids.shuffle.schema.HostColumnsVisitor;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 
-import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padFor64byteAlignment;
+import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlignment;
 
 
-class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
+class SlicedBufferSerializer implements HostColumnsVisitor<Long, Long> {
     private final SliceInfo root;
     private final BufferType bufferType;
     private final DataWriter writer;
@@ -30,12 +30,12 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
     }
 
     @Override
-    public Long visitTopSchema(Schema schema, List<Long> children) {
+    public Long visitTopSchema(List<Long> children) {
         return children.stream().mapToLong(Long::longValue).sum();
     }
 
     @Override
-    public Long visitStruct(Schema structType, HostColumnVectorCore col, List<Long> children) {
+    public Long visitStruct(HostColumnVectorCore col, List<Long> children) {
         SliceInfo parent = sliceInfos.peekLast();
 
         long bytesCopied = children.stream().mapToLong(Long::longValue).sum();
@@ -57,7 +57,7 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
     }
 
     @Override
-    public Long preVisitList(Schema listType, HostColumnVectorCore col) {
+    public Long preVisitList(HostColumnVectorCore col) {
         SliceInfo parent = sliceInfos.getLast();
 
 
@@ -97,13 +97,13 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
     }
 
     @Override
-    public Long visitList(Schema listType, HostColumnVectorCore col, Long preVisitResult, Long childResult) {
+    public Long visitList(HostColumnVectorCore col, Long preVisitResult, Long childResult) {
         sliceInfos.removeLast();
         return preVisitResult + childResult;
     }
 
     @Override
-    public Long visit(Schema primitiveType, HostColumnVectorCore col) {
+    public Long visit(HostColumnVectorCore col) {
         SliceInfo parent = sliceInfos.getLast();
         try {
             switch (bufferType) {
@@ -127,7 +127,7 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
             long len = sliceInfo.getValidityBufferInfo().getBufferLength();
             writer.copyDataFrom(buff, sliceInfo.getValidityBufferInfo().getBufferOffset(),
                     len);
-            return padFor64byteAlignment(writer, len);
+            return padForHostAlignment(writer, len);
         } else {
             return 0;
         }
@@ -142,7 +142,7 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
         long srcOffset = sliceInfo.offset * Integer.BYTES;
         HostMemoryBuffer buff = column.getOffsets();
         writer.copyDataFrom(buff, srcOffset, bytesToCopy);
-        return padFor64byteAlignment(writer, bytesToCopy);
+        return padForHostAlignment(writer, bytesToCopy);
     }
 
     private long copySlicedData(HostColumnVectorCore column, SliceInfo sliceInfo) throws IOException {
@@ -161,13 +161,13 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
                     return 0;
                 } else {
                     writer.copyDataFrom(column.getData(), startByteOffset, bytesToCopy);
-                    return padFor64byteAlignment(writer, bytesToCopy);
+                    return padForHostAlignment(writer, bytesToCopy);
                 }
             } else if (type.getSizeInBytes() > 0) {
                 long bytesToCopy = sliceInfo.rowCount * type.getSizeInBytes();
                 long srcOffset = sliceInfo.offset * type.getSizeInBytes();
                 writer.copyDataFrom(column.getData(), srcOffset, bytesToCopy);
-                return padFor64byteAlignment(writer, bytesToCopy);
+                return padForHostAlignment(writer, bytesToCopy);
             } else {
                 return 0;
             }

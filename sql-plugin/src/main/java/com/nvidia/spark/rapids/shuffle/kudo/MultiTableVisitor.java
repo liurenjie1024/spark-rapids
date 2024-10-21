@@ -14,6 +14,7 @@ import java.util.Objects;
 
 import static com.nvidia.spark.rapids.shuffle.TableUtils.ensure;
 import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padFor64byteAlignment;
+import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlignment;
 import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.safeLongToInt;
 
 public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
@@ -164,20 +165,20 @@ public abstract class MultiTableVisitor<T, R> implements SchemaVisitor<T, R> {
                 }
 
                 if (tables.get(tableIdx).getHeader().hasValidityBuffer(currentIdx)) {
-                    currentValidityOffsets[tableIdx] += padFor64byteAlignment(sliceInfo.getValidityBufferInfo().getBufferLength());
+                    currentValidityOffsets[tableIdx] += padForHostAlignment(sliceInfo.getValidityBufferInfo().getBufferLength());
                 }
 
                 if (updateOffset) {
-                    currentOffsetOffsets[tableIdx] += padFor64byteAlignment((sliceInfo.getRowCount() + 1) * Integer.BYTES);
+                    currentOffsetOffsets[tableIdx] += padForHostAlignment((sliceInfo.getRowCount() + 1) * Integer.BYTES);
                     if (updateData) {
                         // string type
-                        currentDataOffset[tableIdx] += padFor64byteAlignment(strDataLen[tableIdx]);
+                        currentDataOffset[tableIdx] += padForHostAlignment(strDataLen[tableIdx]);
                     }
                     // otherwise list type
                 } else {
                     if (updateData) {
                         // primitive type
-                        currentDataOffset[tableIdx] += padFor64byteAlignment(sliceInfo.getRowCount() * sizeInBytes);
+                        currentDataOffset[tableIdx] += padForHostAlignment(sliceInfo.getRowCount() * sizeInBytes);
                     }
                 }
 
