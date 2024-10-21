@@ -7,7 +7,6 @@ import ai.rapids.cudf.HostColumnVector;
 import ai.rapids.cudf.HostMemoryBuffer;
 import ai.rapids.cudf.Schema;
 import ai.rapids.cudf.Table;
-import com.nvidia.spark.rapids.shuffle.TableUtils;
 import com.nvidia.spark.rapids.shuffle.schema.Visitors;
 import org.apache.commons.lang3.tuple.Pair;
 
@@ -17,10 +16,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -147,20 +143,13 @@ public class KudoSerializer {
   private static long writeSliced(HostColumnVector[] columns, DataWriter out, long rowOffset, long numRows) throws Exception {
     List<HostColumnVector> columnList = Arrays.stream(columns).collect(Collectors.toList());
 
-    Schema.Builder schemaBuilder = Schema.builder();
-    for (int i = 0; i < columns.length; i++) {
-      TableUtils.addToSchema(columns[i], "col_" + i + "_", schemaBuilder);
-    }
-    Schema schema = schemaBuilder.build();
-
-
     SerializedTableHeaderCalc headerCalc = new SerializedTableHeaderCalc(rowOffset, numRows);
-    SerializedTableHeader header = Visitors.visitSchemaWithColumns(schema, columnList, headerCalc);
+    SerializedTableHeader header = Visitors.visitColumns(columnList, headerCalc);
     header.writeTo(out);
 
     long bytesWritten = 0;
     for (BufferType bufferType : Arrays.asList(BufferType.VALIDITY, BufferType.OFFSET, BufferType.DATA)) {
-      bytesWritten += Visitors.visitSchemaWithColumns(schema, columnList, new SlicedBufferSerializer(rowOffset, numRows, bufferType, out));
+      bytesWritten += Visitors.visitColumns(columnList, new SlicedBufferSerializer(rowOffset, numRows, bufferType, out));
     }
 
     if (bytesWritten != header.getTotalDataLen()) {

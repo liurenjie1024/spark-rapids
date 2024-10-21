@@ -5,7 +5,7 @@ import ai.rapids.cudf.DType;
 import ai.rapids.cudf.HostColumnVectorCore;
 import ai.rapids.cudf.HostMemoryBuffer;
 import ai.rapids.cudf.Schema;
-import com.nvidia.spark.rapids.shuffle.schema.SchemaWithColumnsVisitor;
+import com.nvidia.spark.rapids.shuffle.schema.HostColumnsVisitor;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -15,7 +15,7 @@ import java.util.List;
 import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlignment;
 
 
-class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
+class SlicedBufferSerializer implements HostColumnsVisitor<Long, Long> {
     private final SliceInfo root;
     private final BufferType bufferType;
     private final DataWriter writer;
@@ -30,12 +30,12 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
     }
 
     @Override
-    public Long visitTopSchema(Schema schema, List<Long> children) {
+    public Long visitTopSchema(List<Long> children) {
         return children.stream().mapToLong(Long::longValue).sum();
     }
 
     @Override
-    public Long visitStruct(Schema structType, HostColumnVectorCore col, List<Long> children) {
+    public Long visitStruct(HostColumnVectorCore col, List<Long> children) {
         SliceInfo parent = sliceInfos.peekLast();
 
         long bytesCopied = children.stream().mapToLong(Long::longValue).sum();
@@ -57,7 +57,7 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
     }
 
     @Override
-    public Long preVisitList(Schema listType, HostColumnVectorCore col) {
+    public Long preVisitList(HostColumnVectorCore col) {
         SliceInfo parent = sliceInfos.getLast();
 
 
@@ -97,13 +97,13 @@ class SlicedBufferSerializer implements SchemaWithColumnsVisitor<Long, Long> {
     }
 
     @Override
-    public Long visitList(Schema listType, HostColumnVectorCore col, Long preVisitResult, Long childResult) {
+    public Long visitList(HostColumnVectorCore col, Long preVisitResult, Long childResult) {
         sliceInfos.removeLast();
         return preVisitResult + childResult;
     }
 
     @Override
-    public Long visit(Schema primitiveType, HostColumnVectorCore col) {
+    public Long visit(HostColumnVectorCore col) {
         SliceInfo parent = sliceInfos.getLast();
         try {
             switch (bufferType) {
