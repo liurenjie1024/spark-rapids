@@ -39,6 +39,7 @@ import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.filecache.FileCache
 import com.nvidia.spark.rapids.jni.{DateTimeRebase, ParquetFooter}
 import com.nvidia.spark.rapids.shims.{ColumnDefaultValuesShims, GpuParquetCrypto, GpuTypeShims, ParquetLegacyNanoAsLongShims, ParquetSchemaClipShims, ParquetStringPredShims, ShimFilePartitionReaderFactory, SparkShimImpl}
+import com.nvidia.spark.rapids.velox.VeloxBackendApis
 import org.apache.commons.io.IOUtils
 import org.apache.commons.io.output.{CountingOutputStream, NullOutputStream}
 import org.apache.hadoop.conf.Configuration
@@ -1612,6 +1613,39 @@ trait ParquetPartitionReaderBase extends Logging with ScanWithMetrics
         conf, out.buffer, filePath.toUri,
         coalescedRanges.map(r => IntRangeWithOffset(r.offset, r.length, r.outputOffset))
       ).getOrElse {
+
+      lazy val rt = VeloxBackendApis.getRuntime.get
+      val veloxFileHandle: Long = if (VeloxBackendApis.useVeloxHdfs) {
+        // if openHadoopFile returns 0, it means the specific filePath cannot be parsed
+        // by veloxHDFS
+        val ptr = rt.openHadoopFile(filePathString)
+        if (ptr == 0L) {
+          logError(s"failed to open file($filePathString) via VeloxHDFS")
+        }
+        ptr
+      } else {
+        0L
+      }
+
+      if (veloxFileHandle > 0) {
+        // leverage velox::HdfsReadFile to buffer Hdfs files (which based on libhdfs3)
+        try {
+          val bufferAddr = out.buffer.getAddress
+          coalescedRanges.foldLeft(0L) { (acc, blockCopy) =>
+            rt.copyFromHadoopFile(veloxFileHandle,
+              blockCopy.offset,
+              blockCopy.length,
+              bufferAddr + blockCopy.outputOffset
+            )
+            out.seek(blockCopy.outputOffset + blockCopy.length)
+            acc + blockCopy.length
+          }
+        } finally {
+          rt.closeHadoopFile(veloxFileHandle)
+          logInfo(s"successfully read file($filePathString) through VeloxHDFS")
+        }
+      } else {
+
         withResource(filePath.getFileSystem(conf).open(filePath)) { in =>
           val copyBuffer: Array[Byte] = new Array[Byte](copyBufferSize)
           coalescedRanges.foldLeft(0L) { (acc, blockCopy) =>
@@ -1619,6 +1653,7 @@ trait ParquetPartitionReaderBase extends Logging with ScanWithMetrics
           }
         }
       }
+    }
     // try to cache the remote ranges that were copied
     remoteCopies.foreach { range =>
       metrics.getOrElse(GpuMetric.FILECACHE_DATA_RANGE_MISSES, NoopMetric) += 1
