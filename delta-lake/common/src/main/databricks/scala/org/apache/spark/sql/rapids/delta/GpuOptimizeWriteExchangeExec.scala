@@ -101,7 +101,7 @@ case class GpuOptimizeWriteExchangeExec(
 
   private lazy val serializer: Serializer = new GpuColumnarBatchSerializer(
     gpuLongMetric("dataSize"), allMetrics("rapidsShuffleSerializationTime"),
-    allMetrics("rapidsShuffleDeserializationTime"))
+    allMetrics("rapidsShuffleDeserializationTime"), None)
 
   @transient lazy val inputRDD: RDD[ColumnarBatch] = child.executeColumnar()
 
