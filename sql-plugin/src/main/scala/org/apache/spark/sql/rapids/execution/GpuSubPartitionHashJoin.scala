@@ -171,6 +171,14 @@ class GpuBatchSubPartitioner(
     stringBuilder.toString()
   }
 
+  private var retryCountForPartBatch = 0
+
+  def getCurRetryCountAndReset: Int = {
+    val cnt = retryCountForPartBatch
+    retryCountForPartBatch = 0
+    math.max(cnt - 1, 0) // the first run is not a retry
+  }
+
   private[this] def partitionBatches(): Unit = {
     while (inputIter.hasNext) {
       val gpuBatch = inputIter.next()
@@ -183,6 +191,7 @@ class GpuBatchSubPartitioner(
         // 2) Split into smaller tables according to partitions
         val subTables = withResource(partedTable) { _ =>
           RmmRapidsRetryIterator.withRetryNoSplit {
+            retryCountForPartBatch += 1
             partedTable.getTable.contiguousSplit(partedTable.getPartitions.tail: _*)
           }
         }
@@ -359,6 +368,9 @@ class GpuSubPartitionPairIterator(
   private[this] var partitionPair: Option[PartitionPair] = None
   private[this] var pairConsumed = true
 
+  def getCurRetryCountAndReset: Int = buildSubPartitioner.getCurRetryCountAndReset +
+    streamSubPartitioner.getCurRetryCountAndReset
+
   override def hasNext: Boolean = {
     if (closed) return false
     if (pairConsumed) {
@@ -482,6 +494,7 @@ abstract class BaseSubHashJoinIterator(
     boundStreamKeys: Seq[GpuExpression],
     numPartitions: Int,
     targetSize: Long,
+    retryCount: GpuMetric,
     opTime: GpuMetric)
   extends Iterator[ColumnarBatch] with TaskAutoCloseableResource {
 
@@ -497,6 +510,7 @@ abstract class BaseSubHashJoinIterator(
     nextCb = None
     subPartitionPairIter.close()
     super.close()
+    retryCount += subPartitionPairIter.getCurRetryCountAndReset
   }
 
   override def hasNext: Boolean = {
@@ -558,6 +572,7 @@ trait GpuSubPartitionHashJoin extends Logging { self: GpuHashJoin =>
       numPartitions: Int,
       numOutputRows: GpuMetric,
       numOutputBatches: GpuMetric,
+      retryCount: GpuMetric,
       opTime: GpuMetric,
       joinTime: GpuMetric): Iterator[ColumnarBatch] = {
 
@@ -566,7 +581,7 @@ trait GpuSubPartitionHashJoin extends Logging { self: GpuHashJoin =>
       s"in task ${TaskContext.get().taskAttemptId()}")
 
     new BaseSubHashJoinIterator(builtIter, boundBuildKeys, streamIter,
-        boundStreamKeys, numPartitions, targetSize, opTime) {
+        boundStreamKeys, numPartitions, targetSize, retryCount, opTime) {
 
       private[this] def canOptimizeOut(pair: PartitionPair): Boolean = {
         val (build, stream) = pair.get
