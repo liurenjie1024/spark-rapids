@@ -61,7 +61,8 @@ case class GpuShuffleCoalesceExec(child: SparkPlan, targetBatchByteSize: Long)
     CONCAT_MERGE_HEADER_TIME -> createNanoTimingMetric(DEBUG_LEVEL,
       DESCRIPTION_CONCAT_MERGE_HEADER_TIME),
     CONCAT_MERGE_HOST_BUFFER_TIME -> createNanoTimingMetric(DEBUG_LEVEL,
-      DESCRIPTION_CONCAT_MERGE_HOST_BUFFER_TIME)
+      DESCRIPTION_CONCAT_MERGE_HOST_BUFFER_TIME),
+    NUM_SPLIT_RETRY -> createMetric(DEBUG_LEVEL, DESCRIPTION_SPLIT_RETRY)
   )
 
   override protected val outputBatchesLevel = MODERATE_LEVEL

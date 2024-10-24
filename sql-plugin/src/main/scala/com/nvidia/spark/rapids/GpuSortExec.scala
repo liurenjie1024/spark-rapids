@@ -122,7 +122,8 @@ case class GpuSortExec(
   override lazy val additionalMetrics: Map[String, GpuMetric] =
     Map(
       OP_TIME -> createNanoTimingMetric(MODERATE_LEVEL, DESCRIPTION_OP_TIME),
-      SORT_TIME -> createNanoTimingMetric(MODERATE_LEVEL, DESCRIPTION_SORT_TIME))
+      SORT_TIME -> createNanoTimingMetric(MODERATE_LEVEL, DESCRIPTION_SORT_TIME),
+      NUM_SPLIT_RETRY -> createMetric(DEBUG_LEVEL, DESCRIPTION_SPLIT_RETRY))
 
   private lazy val targetSize = GpuSortExec.targetSize(conf)
 

@@ -377,7 +377,6 @@ trait GpuExec extends SparkPlan {
   protected val outputBatchesLevel: MetricsLevel = DEBUG_LEVEL
 
   lazy val allMetrics: Map[String, GpuMetric] = Map(
-    NUM_SPLIT_RETRY -> createMetric(DEBUG_LEVEL, DESCRIPTION_SPLIT_RETRY),
     NUM_OUTPUT_ROWS -> createMetric(outputRowsLevel, DESCRIPTION_NUM_OUTPUT_ROWS),
     NUM_OUTPUT_BATCHES -> createMetric(outputBatchesLevel, DESCRIPTION_NUM_OUTPUT_BATCHES)) ++
       additionalMetrics
