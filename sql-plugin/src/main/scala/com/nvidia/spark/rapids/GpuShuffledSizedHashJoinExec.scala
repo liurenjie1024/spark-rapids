@@ -329,7 +329,8 @@ object GpuShuffledSizedHashJoinExec {
       OP_TIME -> metrics(OP_TIME),
       CONCAT_TIME -> metrics(CONCAT_TIME),
       CONCAT_MERGE_HEADER_TIME -> metrics(CONCAT_MERGE_HEADER_TIME),
-      CONCAT_MERGE_HOST_BUFFER_TIME -> metrics(CONCAT_MERGE_HOST_BUFFER_TIME)
+      CONCAT_MERGE_HOST_BUFFER_TIME -> metrics(CONCAT_MERGE_HOST_BUFFER_TIME),
+      NUM_SPLIT_RETRY -> metrics(NUM_SPLIT_RETRY)
     ).withDefaultValue(NoopMetric)
   }
 
@@ -405,7 +406,8 @@ abstract class GpuShuffledSizedHashJoinExec[HOST_BATCH_TYPE <: AutoCloseable] ex
     BUILD_DATA_SIZE -> createSizeMetric(ESSENTIAL_LEVEL, DESCRIPTION_BUILD_DATA_SIZE),
     BUILD_TIME -> createNanoTimingMetric(ESSENTIAL_LEVEL, DESCRIPTION_BUILD_TIME),
     STREAM_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_STREAM_TIME),
-    JOIN_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_JOIN_TIME))
+    JOIN_TIME -> createNanoTimingMetric(DEBUG_LEVEL, DESCRIPTION_JOIN_TIME),
+    NUM_SPLIT_RETRY -> createMetric(DEBUG_LEVEL, DESCRIPTION_SPLIT_RETRY))
 
   override def requiredChildDistribution: Seq[Distribution] =
     Seq(GpuHashPartitioning.getDistribution(cpuLeftKeys),
@@ -911,9 +913,17 @@ object GpuShuffledAsymmetricHashJoinExec {
           exprs.buildSideNeedsNullFilter, metrics)
         JoinInfo(joinType, buildSide, buildIter, buildSize, None, streamIter, exprs)
       } else {
-        val buildBatch = getSingleBuildBatch(baseBuildIter, exprs, metrics)
-        val buildIter = new SingleGpuColumnarBatchIterator(buildBatch)
-        val buildStats = JoinBuildSideStats.fromBatch(buildBatch, exprs.boundBuildKeys)
+        val nullFilteredBuildIter = addNullFilterIfNecessary(baseBuildIter,
+          exprs.boundBuildKeys, exprs.buildSideNeedsNullFilter, metrics)
+        val buildQueue = mutable.Queue.empty[SpillableColumnarBatch]
+        val buildStats = closeOnExcept(buildQueue) { _ =>
+          while (nullFilteredBuildIter.hasNext) {
+            buildQueue += SpillableColumnarBatch(nullFilteredBuildIter.next(),
+              SpillPriorities.ACTIVE_ON_DECK_PRIORITY)
+          }
+          JoinBuildSideStats.fromBatches(buildQueue.toSeq, exprs.boundBuildKeys)
+        }
+        val buildIter = new SpillableColumnarBatchQueueIterator(buildQueue, Iterator.empty)
         if (buildStats.streamMagnificationFactor < magnificationThreshold) {
           metrics(BUILD_DATA_SIZE).set(buildSize)
           JoinInfo(joinType, buildSide, buildIter, buildSize, Some(buildStats), streamIter,
@@ -1045,18 +1055,6 @@ object GpuShuffledAsymmetricHashJoinExec {
         new NullFilteredBatchIterator(buildIter, boundKeys, metrics(OP_TIME))
       } else {
         buildIter
-      }
-    }
-
-    private def getSingleBuildBatch(
-        baseIter: Iterator[ColumnarBatch],
-        exprs: BoundJoinExprs,
-        metrics: Map[String, GpuMetric]): ColumnarBatch = {
-      val iter = addNullFilterIfNecessary(baseIter, exprs.boundBuildKeys,
-        exprs.buildSideNeedsNullFilter, metrics)
-      closeOnExcept(iter.next()) { batch =>
-        assert(!iter.hasNext)
-        batch
       }
     }
   }

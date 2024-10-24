@@ -317,7 +317,8 @@ case class GpuHashAggregateMetrics(
     numAggOps: GpuMetric,
     numPreSplits: GpuMetric,
     singlePassTasks: GpuMetric,
-    heuristicTime: GpuMetric) {
+    heuristicTime: GpuMetric,
+    splitRetryCount: GpuMetric) {
 }
 
 /** Utility class to convey information on the aggregation modes being used */
@@ -1934,7 +1935,8 @@ case class GpuHashAggregateExec(
     "NUM_AGGS" -> createMetric(DEBUG_LEVEL, "num agg operations"),
     "NUM_PRE_SPLITS" -> createMetric(DEBUG_LEVEL, "num pre splits"),
     "NUM_TASKS_SINGLE_PASS" -> createMetric(MODERATE_LEVEL, "number of single pass tasks"),
-    "HEURISTIC_TIME" -> createNanoTimingMetric(DEBUG_LEVEL, "time in heuristic")
+    "HEURISTIC_TIME" -> createNanoTimingMetric(DEBUG_LEVEL, "time in heuristic"),
+    NUM_SPLIT_RETRY -> createMetric(DEBUG_LEVEL, DESCRIPTION_SPLIT_RETRY)
   )
 
   // requiredChildDistributions are CPU expressions, so remove it from the GPU expressions list
@@ -1967,7 +1969,8 @@ case class GpuHashAggregateExec(
       numAggOps = gpuLongMetric("NUM_AGGS"),
       numPreSplits = gpuLongMetric("NUM_PRE_SPLITS"),
       singlePassTasks = gpuLongMetric("NUM_TASKS_SINGLE_PASS"),
-      heuristicTime = gpuLongMetric("HEURISTIC_TIME"))
+      heuristicTime = gpuLongMetric("HEURISTIC_TIME"),
+      splitRetryCount = gpuLongMetric(NUM_SPLIT_RETRY))
 
     // cache in a local variable to avoid serializing the full child plan
     val inputAttrs = inputAttributes
@@ -2172,7 +2175,8 @@ class DynamicGpuPartialAggregateIterator(
         opTime = metrics.opTime,
         sortTime = metrics.sortTime,
         outputBatches = NoopMetric,
-        outputRows = NoopMetric)
+        outputRows = NoopMetric,
+        numSplitRetries = metrics.splitRetryCount)
     }
 
     // After sorting we want to split the input for the project so that
