@@ -121,8 +121,48 @@ object VectorBuilder {
   // 2. the tail position of offsetBuffer
   // 3. total row count
   // 4. total null count
-  private def getTailInfoPos(colIndex: Int, infoIndex: Int): Int = {
+  private[rapids] def getTailInfoPos(colIndex: Int, infoIndex: Int): Int = {
     colIndex * TAIL_INFO_STRIDE + TAIL_INFO_OFFSET + infoIndex
+  }
+
+
+  /**
+   *  1. ArrayLength
+   *  2. pre-convert time (in mircoSecond)
+   *  2. vector decode time (in mircoSecond)
+   */
+  val FIELD_METRIC_HEADER_SIZE = 3
+
+  /**
+   *  The schema of field metrics from NativeConverter
+   *
+   *  1. convert time (in mircoSecond)
+   *  2. number of output batches
+   *  3. number of output rows
+   *  4. number of output size (in Bytes)
+   *  5. number of null records
+   *  6. number of unique records
+   *  7. number of constant batches
+   *  8. number of identity batches
+   *  9. number of shuffle batches
+   *  10. number of array-range batches
+   */
+  val FIELD_METRIC_STRIDE = 10
+
+  private[rapids] def dumpFieldMetrics(metrics: Array[Long], fieldOffset: Int): String = {
+    val timeMs = metrics(fieldOffset) / 1000 // Millisecond
+    val batches = metrics(fieldOffset + 1)
+    val rows = metrics(fieldOffset + 2)
+    val bytes = metrics(fieldOffset + 3) / 1024 // KB
+    val numNulls = metrics(fieldOffset + 4)
+    val rowsWithDict = metrics(fieldOffset + 5)
+    val constBatches = metrics(fieldOffset + 6)
+    val identityBatches = metrics(fieldOffset + 7)
+    val rangeBatches = metrics(fieldOffset + 8)
+    val dictBatches = metrics(fieldOffset + 9)
+
+    s" ${timeMs}ms ${rows}rows ${bytes}KB ${batches}batches(C:$constBatches|I:$identityBatches|" +
+      s"R:$rangeBatches|S:$dictBatches) ${numNulls}nullRows ${rowsWithDict}rowsWithDict"
   }
 }
 
@@ -359,7 +399,7 @@ object VeloxBatchConverter extends Logging {
     val builder = mutable.StringBuilder.newBuilder
     builder.append(s"pre-convert time ${metrics(1) / 1000}ms\n")
       .append(s"char count time ${metrics(2) / 1000}ms\n")
-    var offset = 3
+    var offset = VectorBuilder.FIELD_METRIC_HEADER_SIZE
 
     val stack = mutable.Stack[(StructField, Int)]()
     schema.fields.reverseIterator.foreach(f => stack.push(f -> 1))
@@ -371,13 +411,9 @@ object VeloxBatchConverter extends Logging {
       builder
         .append(' ')
         .append(f.toString())
-        .append(s" ${metrics(offset) / 1000}ms " +
-          s"${metrics(offset + 2)}rows ${metrics(offset + 3) / 1024}KB " +
-          s"${metrics(offset + 1)}batches(C:${metrics(offset + 4)}|" +
-          s"I:${metrics(offset + 5)}|R:${metrics(offset + 6)}|S:${metrics(offset + 7)})"
-        )
+        .append(VectorBuilder.dumpFieldMetrics(metrics, offset))
         .append('\n')
-      offset += 8
+      offset += VectorBuilder.FIELD_METRIC_STRIDE
 
       f.dataType match {
         case at: ArrayType =>
