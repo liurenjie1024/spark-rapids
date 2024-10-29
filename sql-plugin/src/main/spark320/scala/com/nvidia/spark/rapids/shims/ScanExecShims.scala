@@ -51,10 +51,9 @@ object ScanExecShims {
         }
         if (conf.parquetVeloxReader && 
             fsse.relation.fileFormat.getClass == classOf[ParquetFileFormat] &&
-            !unsupportedType) {
+            !unsupportedType && !fsse.bucketedScan) {
           require(conf.loadVelox,
             "Velox has NOT been loaded! Please enable spark.rapids.sql.loadVelox before startup")
-          require(!fsse.bucketedScan, "VeloxParquetReader do NOT support bucketedScan for now")
           new VeloxFileSourceScanExecMeta(fsse, conf, p, r)
         } else {
           new FileSourceScanExecMeta(fsse, conf, p, r)
