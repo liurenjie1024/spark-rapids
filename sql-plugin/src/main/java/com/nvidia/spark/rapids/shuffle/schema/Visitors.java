@@ -15,9 +15,10 @@ public class Visitors {
         Objects.requireNonNull(schema, "schema cannot be null");
         Objects.requireNonNull(visitor, "visitor cannot be null");
 
-        List<T> childrenResult = IntStream.range(0, schema.getNumChildren())
-                .mapToObj(i -> visitSchemaInner(schema.getChild(i), visitor))
-                .collect(Collectors.toList());
+        List<T> childrenResult = new ArrayList<>(schema.getNumChildren());
+        for (int i=0; i<schema.getNumChildren(); i++) {
+            childrenResult.add(visitSchemaInner(schema.getChild(i), visitor));
+        }
 
         return visitor.visitTopSchema(schema, childrenResult);
     }
@@ -42,21 +43,17 @@ public class Visitors {
     /**
      * Entry point for visiting a schema with columns.
      */
-    public static <T, R> R visitColumns(List<HostColumnVector> cols,
-                                                  HostColumnsVisitor<T, R> visitor) {
+    public static <T> void visitColumns(HostColumnVector[] cols,
+        HostColumnsVisitor<T> visitor) {
         Objects.requireNonNull(cols, "cols cannot be null");
         Objects.requireNonNull(visitor, "visitor cannot be null");
 
-        List<T> childrenResult = new ArrayList<>(cols.size());
-
         for (HostColumnVector col : cols) {
-            childrenResult.add(visitSchema(col, visitor));
+            visitSchema(col, visitor);
         }
-
-        return visitor.visitTopSchema(childrenResult);
     }
 
-    private static <T, R> T visitSchema(HostColumnVectorCore col, HostColumnsVisitor<T, R> visitor) {
+    private static <T> T visitSchema(HostColumnVectorCore col, HostColumnsVisitor<T> visitor) {
         switch (col.getType().getTypeId()) {
             case STRUCT:
                 List<T> children = IntStream.range(0, col.getNumChildren())

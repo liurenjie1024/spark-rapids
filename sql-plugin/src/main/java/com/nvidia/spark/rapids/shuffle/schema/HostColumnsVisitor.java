@@ -4,9 +4,7 @@ import ai.rapids.cudf.HostColumnVectorCore;
 
 import java.util.List;
 
-public interface HostColumnsVisitor<T, R> {
-    R visitTopSchema(List<T> children);
-
+public interface HostColumnsVisitor<T> {
     T visitStruct(HostColumnVectorCore col, List<T> children);
 
     T preVisitList(HostColumnVectorCore col);

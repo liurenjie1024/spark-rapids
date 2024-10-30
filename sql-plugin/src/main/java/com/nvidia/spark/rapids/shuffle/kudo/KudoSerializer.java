@@ -16,6 +16,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -141,15 +142,16 @@ public class KudoSerializer {
   }
 
   private static long writeSliced(HostColumnVector[] columns, DataWriter out, long rowOffset, long numRows) throws Exception {
-    List<HostColumnVector> columnList = Arrays.stream(columns).collect(Collectors.toList());
-
     SerializedTableHeaderCalc headerCalc = new SerializedTableHeaderCalc(rowOffset, numRows);
-    SerializedTableHeader header = Visitors.visitColumns(columnList, headerCalc);
+    Visitors.visitColumns(columns, headerCalc);
+    SerializedTableHeader header = headerCalc.getHeader();
     header.writeTo(out);
 
     long bytesWritten = 0;
     for (BufferType bufferType : Arrays.asList(BufferType.VALIDITY, BufferType.OFFSET, BufferType.DATA)) {
-      bytesWritten += Visitors.visitColumns(columnList, new SlicedBufferSerializer(rowOffset, numRows, bufferType, out));
+      SlicedBufferSerializer serializer = new SlicedBufferSerializer(rowOffset, numRows, bufferType, out);
+      Visitors.visitColumns(columns, serializer);
+      bytesWritten += serializer.getTotalDataLen();
     }
 
     if (bytesWritten != header.getTotalDataLen()) {

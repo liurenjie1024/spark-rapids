@@ -4,7 +4,6 @@ import ai.rapids.cudf.BufferType;
 import ai.rapids.cudf.DType;
 import ai.rapids.cudf.HostColumnVectorCore;
 import ai.rapids.cudf.HostMemoryBuffer;
-import ai.rapids.cudf.Schema;
 import com.nvidia.spark.rapids.shuffle.schema.HostColumnsVisitor;
 
 import java.io.IOException;
@@ -15,38 +14,38 @@ import java.util.List;
 import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlignment;
 
 
-class SlicedBufferSerializer implements HostColumnsVisitor<Long, Long> {
+class SlicedBufferSerializer implements HostColumnsVisitor<Void> {
     private final SliceInfo root;
     private final BufferType bufferType;
     private final DataWriter writer;
 
     private final Deque<SliceInfo> sliceInfos = new ArrayDeque<>();
+    private long totalDataLen;
 
     SlicedBufferSerializer(long rowOffset, long numRows, BufferType bufferType, DataWriter writer) {
         this.root = new SliceInfo(rowOffset, numRows);
         this.bufferType = bufferType;
         this.writer = writer;
         this.sliceInfos.addLast(root);
+        this.totalDataLen = 0;
+    }
+
+    public long getTotalDataLen() {
+        return totalDataLen;
     }
 
     @Override
-    public Long visitTopSchema(List<Long> children) {
-        return children.stream().mapToLong(Long::longValue).sum();
-    }
-
-    @Override
-    public Long visitStruct(HostColumnVectorCore col, List<Long> children) {
+    public Void visitStruct(HostColumnVectorCore col, List<Void> children) {
         SliceInfo parent = sliceInfos.peekLast();
 
-        long bytesCopied = children.stream().mapToLong(Long::longValue).sum();
         try {
             switch (bufferType) {
                 case VALIDITY:
-                    bytesCopied += this.copySlicedValidity(col, parent);
-                    return bytesCopied;
+                    totalDataLen += this.copySlicedValidity(col, parent);
+                    return null;
                 case OFFSET:
                 case DATA:
-                    return bytesCopied;
+                    return null;
                 default:
                     throw new IllegalArgumentException("Unexpected buffer type: " + bufferType);
             }
@@ -57,7 +56,7 @@ class SlicedBufferSerializer implements HostColumnsVisitor<Long, Long> {
     }
 
     @Override
-    public Long preVisitList(HostColumnVectorCore col) {
+    public Void preVisitList(HostColumnVectorCore col) {
         SliceInfo parent = sliceInfos.getLast();
 
 
@@ -93,26 +92,31 @@ class SlicedBufferSerializer implements HostColumnsVisitor<Long, Long> {
         }
 
         sliceInfos.addLast(current);
-        return bytesCopied;
+
+        totalDataLen += bytesCopied;
+        return null;
     }
 
     @Override
-    public Long visitList(HostColumnVectorCore col, Long preVisitResult, Long childResult) {
+    public Void visitList(HostColumnVectorCore col, Void preVisitResult, Void childResult) {
         sliceInfos.removeLast();
-        return preVisitResult + childResult;
+        return null;
     }
 
     @Override
-    public Long visit(HostColumnVectorCore col) {
+    public Void visit(HostColumnVectorCore col) {
         SliceInfo parent = sliceInfos.getLast();
         try {
             switch (bufferType) {
                 case VALIDITY:
-                    return this.copySlicedValidity(col, parent);
+                    totalDataLen += this.copySlicedValidity(col, parent);
+                    return null;
                 case OFFSET:
-                    return this.copySlicedOffset(col, parent);
+                    totalDataLen += this.copySlicedOffset(col, parent);
+                    return null;
                 case DATA:
-                    return this.copySlicedData(col, parent);
+                    totalDataLen += this.copySlicedData(col, parent);
+                    return null;
                 default:
                     throw new IllegalArgumentException("Unexpected buffer type: " + bufferType);
             }

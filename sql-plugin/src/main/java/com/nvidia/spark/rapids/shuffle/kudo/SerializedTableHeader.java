@@ -36,7 +36,8 @@ public final class SerializedTableHeader {
         readFrom(din);
     }
 
-    SerializedTableHeader(long offset, long numRows, long validityBufferLen, long offsetBufferLen, long totalDataLen, byte[] hasValidityBuffer) {
+    SerializedTableHeader(long offset, long numRows, long validityBufferLen, long offsetBufferLen,
+        long totalDataLen, byte[] hasValidityBuffer) {
         this.offset = offset;
         this.numRows = numRows;
         this.validityBufferLen = validityBufferLen;
@@ -77,8 +78,8 @@ public final class SerializedTableHeader {
         return hasValidityBuffer[columnIndex] != 0;
     }
 
-    public long getSerializedSize() {
-        return 4 + 2 + 8 + 8 + 8 + 8 + 8 + 4 + hasValidityBuffer.length;
+    public int getSerializedSize() {
+        return 4 + 2 + 4 + 4 + 4 + 4 + 4 + 4 + hasValidityBuffer.length;
     }
 
     public int getNumColumns() {
@@ -113,12 +114,12 @@ public final class SerializedTableHeader {
             throw new IllegalStateException("READING THE WRONG SERIALIZATION FORMAT VERSION FOUND " + version + " EXPECTED " + VERSION_NUMBER);
         }
 
-        offset = din.readLong();
-        numRows = din.readLong();
+        offset = din.readInt();
+        numRows = din.readInt();
 
-        validityBufferLen = din.readLong();
-        offsetBufferLen = din.readLong();
-        totalDataLen = din.readLong();
+        validityBufferLen = din.readInt();
+        offsetBufferLen = din.readInt();
+        totalDataLen = din.readInt();
         int validityBufferLength = din.readInt();
         hasValidityBuffer = new byte[validityBufferLength];
         din.readFully(hasValidityBuffer);
@@ -131,11 +132,11 @@ public final class SerializedTableHeader {
         dout.writeInt(SER_FORMAT_MAGIC_NUMBER);
         dout.writeShort(VERSION_NUMBER);
 
-        dout.writeLong(offset);
-        dout.writeLong(numRows);
-        dout.writeLong(validityBufferLen);
-        dout.writeLong(offsetBufferLen);
-        dout.writeLong(totalDataLen);
+        dout.writeInt((int)offset);
+        dout.writeInt((int)numRows);
+        dout.writeInt((int)validityBufferLen);
+        dout.writeInt((int)offsetBufferLen);
+        dout.writeInt((int)totalDataLen);
         dout.writeInt(hasValidityBuffer.length);
         dout.write(hasValidityBuffer, 0, hasValidityBuffer.length);
     }
