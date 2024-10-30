@@ -1,6 +1,5 @@
 package com.nvidia.spark.rapids.shuffle.kudo;
 
-import ai.rapids.cudf.BufferType;
 import ai.rapids.cudf.DType;
 import ai.rapids.cudf.HostColumnVectorCore;
 import com.nvidia.spark.rapids.shuffle.schema.HostColumnsVisitor;
@@ -13,9 +12,9 @@ import java.util.List;
 import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlignment;
 
 
-class SerializedTableHeaderCalc implements HostColumnsVisitor<Void, SerializedTableHeader> {
+class SerializedTableHeaderCalc implements HostColumnsVisitor<Void> {
     private final SliceInfo root;
-    private final List<Boolean> hasValidityBuffer = new ArrayList<>(1024);
+    private final List<Boolean> hasValidityBuffer = new ArrayList<>(256);
     private long validityBufferLen;
     private long offsetBufferLen;
     private long totalDataLen;
@@ -28,8 +27,7 @@ class SerializedTableHeaderCalc implements HostColumnsVisitor<Void, SerializedTa
         sliceInfos.addLast(this.root);
     }
 
-    @Override
-    public SerializedTableHeader visitTopSchema(List<Void> children) {
+    public SerializedTableHeader getHeader() {
         byte[] hasValidityBuffer = new byte[this.hasValidityBuffer.size()];
         for (int i = 0; i < this.hasValidityBuffer.size(); i++) {
             hasValidityBuffer[i] = (byte) (this.hasValidityBuffer.get(i) ? 1 : 0);
@@ -102,9 +100,9 @@ class SerializedTableHeaderCalc implements HostColumnsVisitor<Void, SerializedTa
     @Override
     public Void visit(HostColumnVectorCore col) {
         SliceInfo parent = sliceInfos.peekLast();
-        long validityBufferLen = calcPrimitiveDataLen(col, BufferType.VALIDITY, parent);
-        long offsetBufferLen = calcPrimitiveDataLen(col, BufferType.OFFSET, parent);
-        long dataBufferLen = calcPrimitiveDataLen(col, BufferType.DATA, parent);
+        long validityBufferLen = dataLenOfValidityBuffer(col, parent);
+        long offsetBufferLen = dataLenOfOffsetBuffer(col, parent);
+        long dataBufferLen = dataLenOfDataBuffer(col, parent);
 
         this.validityBufferLen += validityBufferLen;
         this.offsetBufferLen += offsetBufferLen;
@@ -115,41 +113,37 @@ class SerializedTableHeaderCalc implements HostColumnsVisitor<Void, SerializedTa
         return null;
     }
 
-    private long calcPrimitiveDataLen(HostColumnVectorCore col,
-                                      BufferType bufferType,
-                                      SliceInfo info) {
-        switch (bufferType) {
-            case VALIDITY:
-                if (col.hasValidityVector() && info.getRowCount() > 0) {
-                    return  padForHostAlignment(info.getValidityBufferInfo().getBufferLength());
-                } else {
-                    return 0;
-                }
-            case OFFSET:
-                if (DType.STRING.equals(col.getType()) && info.getRowCount() > 0) {
-                    return padForHostAlignment((info.rowCount + 1) * Integer.BYTES);
-                } else {
-                    return 0;
-                }
-            case DATA:
-                if (DType.STRING.equals(col.getType())) {
-                    if (col.getOffsets() != null) {
-                        long startByteOffset = col.getOffsets().getInt(info.offset * Integer.BYTES);
-                        long endByteOffset = col.getOffsets().getInt((info.offset + info.rowCount) * Integer.BYTES);
-                        return padForHostAlignment(endByteOffset - startByteOffset);
-                    } else {
-                        return 0;
-                    }
-                } else {
-                    if (col.getType().getSizeInBytes() > 0) {
-                        return padForHostAlignment(col.getType().getSizeInBytes() * info.rowCount);
-                    } else {
-                        return 0;
-                    }
-                }
-            default:
-                throw new IllegalArgumentException("Unexpected buffer type: " + bufferType);
+    private static long dataLenOfValidityBuffer(HostColumnVectorCore col, SliceInfo info) {
+        if (col.hasValidityVector() && info.getRowCount() > 0) {
+            return  padForHostAlignment(info.getValidityBufferInfo().getBufferLength());
+        } else {
+            return 0;
+        }
+    }
 
+    private static long dataLenOfOffsetBuffer(HostColumnVectorCore col, SliceInfo info) {
+        if (DType.STRING.equals(col.getType()) && info.getRowCount() > 0) {
+            return padForHostAlignment((info.rowCount + 1) * Integer.BYTES);
+        } else {
+            return 0;
+        }
+    }
+
+    private static long dataLenOfDataBuffer(HostColumnVectorCore col, SliceInfo info) {
+        if (DType.STRING.equals(col.getType())) {
+            if (col.getOffsets() != null) {
+                long startByteOffset = col.getOffsets().getInt(info.offset * Integer.BYTES);
+                long endByteOffset = col.getOffsets().getInt((info.offset + info.rowCount) * Integer.BYTES);
+                return padForHostAlignment(endByteOffset - startByteOffset);
+            } else {
+                return 0;
+            }
+        } else {
+            if (col.getType().getSizeInBytes() > 0) {
+                return padForHostAlignment(col.getType().getSizeInBytes() * info.rowCount);
+            } else {
+                return 0;
+            }
         }
     }
 }
