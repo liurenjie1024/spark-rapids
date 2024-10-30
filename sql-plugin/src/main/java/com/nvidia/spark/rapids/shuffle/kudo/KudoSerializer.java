@@ -7,7 +7,6 @@ import ai.rapids.cudf.HostColumnVector;
 import ai.rapids.cudf.HostMemoryBuffer;
 import ai.rapids.cudf.Schema;
 import ai.rapids.cudf.Table;
-import com.nvidia.spark.rapids.shuffle.TableUtils;
 import com.nvidia.spark.rapids.shuffle.schema.Visitors;
 import org.apache.commons.lang3.tuple.Pair;
 
@@ -17,6 +16,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -142,22 +142,16 @@ public class KudoSerializer {
   }
 
   private static long writeSliced(HostColumnVector[] columns, DataWriter out, long rowOffset, long numRows) throws Exception {
-    List<HostColumnVector> columnList = Arrays.stream(columns).collect(Collectors.toList());
-
-    Schema.Builder schemaBuilder = Schema.builder();
-    for (int i = 0; i < columns.length; i++) {
-      TableUtils.addToSchema(columns[i], "col_" + i + "_", schemaBuilder);
-    }
-    Schema schema = schemaBuilder.build();
-
-
     SerializedTableHeaderCalc headerCalc = new SerializedTableHeaderCalc(rowOffset, numRows);
-    SerializedTableHeader header = Visitors.visitSchemaWithColumns(schema, columnList, headerCalc);
+    Visitors.visitColumns(columns, headerCalc);
+    SerializedTableHeader header = headerCalc.getHeader();
     header.writeTo(out);
 
     long bytesWritten = 0;
     for (BufferType bufferType : Arrays.asList(BufferType.VALIDITY, BufferType.OFFSET, BufferType.DATA)) {
-      bytesWritten += Visitors.visitSchemaWithColumns(schema, columnList, new SlicedBufferSerializer(rowOffset, numRows, bufferType, out));
+      SlicedBufferSerializer serializer = new SlicedBufferSerializer(rowOffset, numRows, bufferType, out);
+      Visitors.visitColumns(columns, serializer);
+      bytesWritten += serializer.getTotalDataLen();
     }
 
     if (bytesWritten != header.getTotalDataLen()) {
@@ -194,6 +188,18 @@ public class KudoSerializer {
   /////////////////////////////////////////////
 // PADDING FOR ALIGNMENT
 /////////////////////////////////////////////
+  static long padForHostAlignment(long orig) {
+    return ((orig + 3) / 4) * 4;
+  }
+
+  static long padForHostAlignment(DataWriter out, long bytes) throws IOException {
+    final long paddedBytes = padForHostAlignment(bytes);
+    if (paddedBytes > bytes) {
+      out.write(PADDING, 0, (int) (paddedBytes - bytes));
+    }
+    return paddedBytes;
+  }
+
   static long padFor64byteAlignment(long orig) {
     return ((orig + 63) / 64) * 64;
   }

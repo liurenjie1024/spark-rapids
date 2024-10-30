@@ -17,6 +17,4 @@ public interface SchemaVisitor<T, R> {
     T visitList(Schema listType, T preVisitResult, T childResult);
 
     T visit(Schema primitiveType);
-
-
 }
