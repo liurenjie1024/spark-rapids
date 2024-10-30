@@ -22,11 +22,12 @@ import scala.concurrent.Future
 import com.nvidia.spark.rapids._
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.shims.{GpuHashPartitioning, GpuRangePartitioning, ShimUnaryExecNode, ShuffleOriginUtil, SparkShimImpl}
-
 import org.apache.spark.{MapOutputStatistics, ShuffleDependency}
+
 import org.apache.spark.rapids.shims.GpuShuffleExchangeExec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
+import org.apache.spark.shuffle.rapids.ExtendedShuffleWriteMetricsReporter
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
@@ -190,7 +191,8 @@ abstract class GpuShuffleExchangeExecBase(
   override def coalesceAfter: Boolean = useGPUShuffle
 
   private lazy val writeMetrics =
-    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext) ++
+      ExtendedShuffleWriteMetricsReporter.createMetrics(sparkContext)
   lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val additionalMetrics : Map[String, GpuMetric] = Map(
@@ -394,7 +396,8 @@ object GpuShuffleExchangeExecBase {
       new BatchPartitionIdPassthrough(newPartitioning.numPartitions),
       sparkTypes,
       serializer,
-      shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
+      shuffleWriterProcessor = ExtendedShuffleWriteMetricsReporter
+        .createShuffleWriteProcessor(writeMetrics),
       useGPUShuffle = useGPUShuffle,
       useMultiThreadedShuffle = useMultiThreadedShuffle,
       metrics = GpuMetric.unwrap(additionalMetrics))
