@@ -7,7 +7,6 @@ import ai.rapids.cudf.HostColumnVector;
 import ai.rapids.cudf.HostMemoryBuffer;
 import ai.rapids.cudf.Schema;
 import ai.rapids.cudf.Table;
-import com.nvidia.spark.rapids.shuffle.TableUtils;
 import com.nvidia.spark.rapids.shuffle.schema.Visitors;
 import org.apache.commons.lang3.tuple.Pair;
 
@@ -189,6 +188,18 @@ public class KudoSerializer {
   /////////////////////////////////////////////
 // PADDING FOR ALIGNMENT
 /////////////////////////////////////////////
+  static long padForHostAlignment(long orig) {
+    return ((orig + 3) / 4) * 4;
+  }
+
+  static long padForHostAlignment(DataWriter out, long bytes) throws IOException {
+    final long paddedBytes = padForHostAlignment(bytes);
+    if (paddedBytes > bytes) {
+      out.write(PADDING, 0, (int) (paddedBytes - bytes));
+    }
+    return paddedBytes;
+  }
+
   static long padFor64byteAlignment(long orig) {
     return ((orig + 63) / 64) * 64;
   }
