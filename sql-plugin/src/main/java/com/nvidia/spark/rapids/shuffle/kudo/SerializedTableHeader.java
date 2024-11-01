@@ -4,6 +4,7 @@ import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Optional;
 
 /**
@@ -25,8 +26,7 @@ public final class SerializedTableHeader {
     private long validityBufferLen;
     private long offsetBufferLen;
     private long totalDataLen;
-    // This is used to indicate the validity buffer for the columns.
-    // 1 means that this column has validity data, 0 means it does not.
+    private int numColumns;
     private byte[] hasValidityBuffer;
 
     private boolean initialized = false;
@@ -37,12 +37,13 @@ public final class SerializedTableHeader {
     }
 
     SerializedTableHeader(long offset, long numRows, long validityBufferLen, long offsetBufferLen,
-        long totalDataLen, byte[] hasValidityBuffer) {
+        long totalDataLen, int numColumns, byte[] hasValidityBuffer) {
         this.offset = offset;
         this.numRows = numRows;
         this.validityBufferLen = validityBufferLen;
         this.offsetBufferLen = offsetBufferLen;
         this.totalDataLen = totalDataLen;
+        this.numColumns = numColumns;
         this.hasValidityBuffer = hasValidityBuffer;
 
         this.initialized = true;
@@ -75,15 +76,17 @@ public final class SerializedTableHeader {
     }
 
     public boolean hasValidityBuffer(int columnIndex) {
-        return hasValidityBuffer[columnIndex] != 0;
+        int pos = columnIndex / 8;
+        int bit = columnIndex % 8;
+        return (hasValidityBuffer[pos] & (1 << bit)) != 0;
     }
 
     public int getSerializedSize() {
-        return 4 + 2 + 4 + 4 + 4 + 4 + 4 + 4 + hasValidityBuffer.length;
+        return 4 + 2 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + hasValidityBuffer.length;
     }
 
     public int getNumColumns() {
-        return Optional.ofNullable(hasValidityBuffer).map(arr -> arr.length).orElse(0);
+        return numColumns;
     }
 
     public long getValidityBufferLen() {
@@ -120,6 +123,7 @@ public final class SerializedTableHeader {
         validityBufferLen = din.readInt();
         offsetBufferLen = din.readInt();
         totalDataLen = din.readInt();
+        numColumns = din.readInt();
         int validityBufferLength = din.readInt();
         hasValidityBuffer = new byte[validityBufferLength];
         din.readFully(hasValidityBuffer);
@@ -137,6 +141,7 @@ public final class SerializedTableHeader {
         dout.writeInt((int)validityBufferLen);
         dout.writeInt((int)offsetBufferLen);
         dout.writeInt((int)totalDataLen);
+        dout.writeInt(numColumns);
         dout.writeInt(hasValidityBuffer.length);
         dout.write(hasValidityBuffer, 0, hasValidityBuffer.length);
     }
@@ -144,13 +149,14 @@ public final class SerializedTableHeader {
     @Override
     public String toString() {
         return "SerializedTableHeader{" +
-                "offset=" + offset +
-                ", numRows=" + numRows +
-                ", validityBufferLen=" + validityBufferLen +
-                ", offsetBufferLen=" + offsetBufferLen +
-                ", totalDataLen=" + totalDataLen +
-                ", hasValidityBuffer=" + Arrays.toString(hasValidityBuffer) +
-                ", initialized=" + initialized +
-                '}';
+            "offset=" + offset +
+            ", numRows=" + numRows +
+            ", validityBufferLen=" + validityBufferLen +
+            ", offsetBufferLen=" + offsetBufferLen +
+            ", totalDataLen=" + totalDataLen +
+            ", numColumns=" + numColumns +
+            ", hasValidityBuffer=" + Arrays.toString(hasValidityBuffer) +
+            ", initialized=" + initialized +
+            '}';
     }
 }
