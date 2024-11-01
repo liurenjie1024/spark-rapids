@@ -61,6 +61,8 @@ trait GpuLoreRDD {
   }
 }
 
+private[lore] case class LoreExecutionState(nextLoreId: AtomicInteger,
+    loreOutputRootPathChecked: Boolean, visitedLoreIds: ConcurrentMap[LoreId])
 
 object GpuLore {
   /**
