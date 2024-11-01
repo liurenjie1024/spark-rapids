@@ -76,9 +76,9 @@ public final class SerializedTableHeader {
     }
 
     public boolean hasValidityBuffer(int columnIndex) {
-        int pos = columnIndex / 64;
-        int bit = columnIndex % 64;
-        return (hasValidityBuffer[pos] & (1L << bit)) != 0;
+        int pos = columnIndex / 8;
+        int bit = columnIndex % 8;
+        return (hasValidityBuffer[pos] & (1 << bit)) != 0;
     }
 
     public int getSerializedSize() {
