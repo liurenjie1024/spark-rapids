@@ -37,7 +37,7 @@ class SerializedTableHeaderCalc implements HostColumnsVisitor<Void> {
         this.setHasValidity(true);
         return new SerializedTableHeader(root.offset, root.rowCount,
                 validityBufferLen, offsetBufferLen,
-                totalDataLen, nextColIdx, bitset.toLongArray());
+                totalDataLen, nextColIdx, bitset.toByteArray());
     }
 
     @Override

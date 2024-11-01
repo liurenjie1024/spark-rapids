@@ -27,7 +27,7 @@ public final class SerializedTableHeader {
     private long offsetBufferLen;
     private long totalDataLen;
     private int numColumns;
-    private long[] hasValidityBuffer;
+    private byte[] hasValidityBuffer;
 
     private boolean initialized = false;
 
@@ -37,7 +37,7 @@ public final class SerializedTableHeader {
     }
 
     SerializedTableHeader(long offset, long numRows, long validityBufferLen, long offsetBufferLen,
-        long totalDataLen, int numColumns, long[] hasValidityBuffer) {
+        long totalDataLen, int numColumns, byte[] hasValidityBuffer) {
         this.offset = offset;
         this.numRows = numRows;
         this.validityBufferLen = validityBufferLen;
