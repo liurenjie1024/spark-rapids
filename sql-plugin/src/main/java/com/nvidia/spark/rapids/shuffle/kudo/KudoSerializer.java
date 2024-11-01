@@ -77,7 +77,8 @@ public class KudoSerializer {
     }
     try {
       DataWriter writer = writerFrom(out);
-      SerializedTableHeader header = new SerializedTableHeader(0, safeLongToInt(numRows), 0, 0, 0, new byte[0]);
+      SerializedTableHeader header = new SerializedTableHeader(0, safeLongToInt(numRows), 0, 0, 0
+          , 0, new long[0]);
       header.writeTo(writer);
       writer.flush();
       return header.getSerializedSize();
@@ -142,7 +143,7 @@ public class KudoSerializer {
   }
 
   private static long writeSliced(HostColumnVector[] columns, DataWriter out, long rowOffset, long numRows) throws Exception {
-    SerializedTableHeaderCalc headerCalc = new SerializedTableHeaderCalc(rowOffset, numRows);
+    SerializedTableHeaderCalc headerCalc = new SerializedTableHeaderCalc(rowOffset, numRows, columns.length);
     Visitors.visitColumns(columns, headerCalc);
     SerializedTableHeader header = headerCalc.getHeader();
     header.writeTo(out);

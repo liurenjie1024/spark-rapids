@@ -6,6 +6,7 @@ import com.nvidia.spark.rapids.shuffle.schema.HostColumnsVisitor;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.Deque;
 import java.util.List;
 
@@ -14,27 +15,29 @@ import static com.nvidia.spark.rapids.shuffle.kudo.KudoSerializer.padForHostAlig
 
 class SerializedTableHeaderCalc implements HostColumnsVisitor<Void> {
     private final SliceInfo root;
-    private final List<Boolean> hasValidityBuffer = new ArrayList<>(256);
+    private final BitSet bitset;
     private long validityBufferLen;
     private long offsetBufferLen;
     private long totalDataLen;
+    private int nextColIdx;
 
     private Deque<SliceInfo> sliceInfos = new ArrayDeque<>();
 
-    SerializedTableHeaderCalc(long rowOffset, long numRows) {
+    SerializedTableHeaderCalc(long rowOffset, long numRows, int numCols) {
         this.root = new SliceInfo(rowOffset, numRows);
         this.totalDataLen = 0;
         sliceInfos.addLast(this.root);
+        this.bitset = new BitSet(numCols);
+        this.nextColIdx = 0;
     }
 
     public SerializedTableHeader getHeader() {
-        byte[] hasValidityBuffer = new byte[this.hasValidityBuffer.size()];
-        for (int i = 0; i < this.hasValidityBuffer.size(); i++) {
-            hasValidityBuffer[i] = (byte) (this.hasValidityBuffer.get(i) ? 1 : 0);
-        }
+        // Bitset calculates length based on the highest set bit, so we need to add 1 to ensure
+        // that the length is correct.
+        this.setHasValidity(true);
         return new SerializedTableHeader(root.offset, root.rowCount,
                 validityBufferLen, offsetBufferLen,
-                totalDataLen, hasValidityBuffer);
+                totalDataLen, nextColIdx, bitset.toLongArray());
     }
 
     @Override
@@ -49,7 +52,7 @@ class SerializedTableHeaderCalc implements HostColumnsVisitor<Void> {
         this.validityBufferLen += validityBufferLength;
 
         totalDataLen += validityBufferLength;
-        hasValidityBuffer.add(col.getValidity() != null);
+        this.setHasValidity(col.getValidity() != null);
         return null;
     }
 
@@ -72,7 +75,7 @@ class SerializedTableHeaderCalc implements HostColumnsVisitor<Void> {
         this.offsetBufferLen += offsetBufferLength;
         this.totalDataLen += validityBufferLength + offsetBufferLength;
 
-        hasValidityBuffer.add(col.getValidity() != null);
+        this.setHasValidity(col.getValidity() != null);
 
         SliceInfo current;
 
@@ -108,9 +111,14 @@ class SerializedTableHeaderCalc implements HostColumnsVisitor<Void> {
         this.offsetBufferLen += offsetBufferLen;
         this.totalDataLen += validityBufferLen + offsetBufferLen + dataBufferLen;
 
-        hasValidityBuffer.add(col.getValidity() != null);
+        this.setHasValidity(col.getValidity() != null);
 
         return null;
+    }
+
+    private void setHasValidity(boolean hasValidityBuffer) {
+        bitset.set(nextColIdx, hasValidityBuffer);
+        nextColIdx++;
     }
 
     private static long dataLenOfValidityBuffer(HostColumnVectorCore col, SliceInfo info) {
