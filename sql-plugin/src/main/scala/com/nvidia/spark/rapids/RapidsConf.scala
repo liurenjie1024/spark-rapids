@@ -1739,7 +1739,7 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .createWithDefault(true)
 
   object RapidsShuffleManagerMode extends Enumeration {
-    val UCX, CACHE_ONLY, MULTITHREADED = Value
+    val UCX, CACHE_ONLY, MULTITHREADED, CELEBORN = Value
   }
 
   val SHUFFLE_MANAGER_MODE = conf("spark.rapids.shuffle.mode")
@@ -3159,6 +3159,10 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
       .withName(get(SHUFFLE_MANAGER_MODE)) == RapidsShuffleManagerMode.CACHE_ONLY
 
   def isGPUShuffle: Boolean = isUCXShuffleManagerMode || isCacheOnlyShuffleManagerMode
+
+  def isCelebornShuffleManagerMode: Boolean =
+    RapidsShuffleManagerMode
+      .withName(get(SHUFFLE_MANAGER_MODE)) == RapidsShuffleManagerMode.CELEBORN
 
   lazy val shimsProviderOverride: Option[String] = get(SHIMS_PROVIDER_OVERRIDE)
 

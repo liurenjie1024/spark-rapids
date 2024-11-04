@@ -135,8 +135,8 @@ object GpuShuffleEnv extends Logging {
     val isConfiguredInEnv = Option(env).exists(_.isRapidsShuffleConfigured)
     (isConfiguredInEnv || isRapidsManager) &&
       (conf.isMultiThreadedShuffleManagerMode ||
-        (conf.isGPUShuffle && !isExternalShuffleEnabled &&
-          !isSparkAuthenticateEnabled)) &&
+        (conf.isGPUShuffle && !isExternalShuffleEnabled && !isSparkAuthenticateEnabled) ||
+        conf.isCelebornShuffleManagerMode) &&
       conf.isSqlExecuteOnGPU
   }
 
@@ -149,6 +149,12 @@ object GpuShuffleEnv extends Logging {
   def useMultiThreadedShuffle(conf: RapidsConf): Boolean = {
     conf.shuffleManagerEnabled &&
       conf.isMultiThreadedShuffleManagerMode &&
+      isRapidsShuffleAvailable(conf)
+  }
+
+  def useCelebornShuffle(conf: RapidsConf): Boolean = {
+    conf.shuffleManagerEnabled &&
+      conf.isCelebornShuffleManagerMode &&
       isRapidsShuffleAvailable(conf)
   }
 

@@ -185,6 +185,13 @@ abstract class GpuShuffleExchangeExecBase(
     }
   }
 
+  private lazy val useCelebornShuffle = {
+    gpuOutputPartitioning match {
+      case gpuPartitioning: GpuPartitioning => gpuPartitioning.usesCelebornShuffle
+      case _ => false
+    }
+  }
+
   // Shuffle produces a lot of small output batches that should be coalesced together.
   // This coalesce occurs on the GPU and should always be done when using RAPIDS shuffle,
   // when it is under UCX or CACHE_ONLY modes.
@@ -252,6 +259,7 @@ abstract class GpuShuffleExchangeExecBase(
       serializer,
       useGPUShuffle,
       useMultiThreadedShuffle,
+      useCelebornShuffle,
       allMetrics,
       writeMetrics,
       additionalMetrics)
@@ -284,6 +292,7 @@ object GpuShuffleExchangeExecBase {
       serializer: Serializer,
       useGPUShuffle: Boolean,
       useMultiThreadedShuffle: Boolean,
+      useCelebornShuffle: Boolean,
       metrics: Map[String, GpuMetric],
       writeMetrics: Map[String, SQLMetric],
       additionalMetrics: Map[String, GpuMetric])
@@ -390,6 +399,7 @@ object GpuShuffleExchangeExecBase {
       shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
       useGPUShuffle = useGPUShuffle,
       useMultiThreadedShuffle = useMultiThreadedShuffle,
+      useCelebornShuffle = useCelebornShuffle,
       metrics = GpuMetric.unwrap(additionalMetrics))
 
     dependency

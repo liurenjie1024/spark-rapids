@@ -1085,6 +1085,12 @@
                 <scope>provided</scope>
             </dependency>
             <dependency>
+                <groupId>org.apache.celeborn</groupId>
+                <artifactId>celeborn-client-spark-3-shaded_${scala.binary.version}</artifactId>
+                <version>0.5.1</version>
+                <scope>compile</scope>
+            </dependency>
+            <dependency>
                 <!-- For shade, spark 3.2 and earlier uses an older version(0.9.0), which doesn't
                  contain the required api we use.
                  -->
