@@ -1,10 +1,26 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
-import org.apache.spark.shuffle.BaseShuffleHandle
+import org.apache.celeborn.common.identity.UserIdentifier
+
+import org.apache.spark.shuffle.celeborn.CelebornShuffleHandle
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 
 class GpuCelebornShuffleHandle[K, V, C](
-    override val dependency: GpuShuffleDependency[K, V, C]) extends
-  BaseShuffleHandle[K, V, C](dependency.shuffleId, dependency) {
-  override def toString: String = s"Celeborn Shuffle Handle $shuffleId"
-}
+    override val appUniqueId: String,
+    override val lifecycleManagerHost: String,
+    override val lifecycleManagerPort: Int,
+    override val userIdentifier: UserIdentifier,
+    shuffleId: Int,
+    override val throwsFetchFailure: Boolean,
+    override val numMappers: Int,
+    override val dependency: GpuShuffleDependency[K, V, C],
+    override val extension: Array[Byte]) extends CelebornShuffleHandle(
+  appUniqueId,
+  lifecycleManagerHost,
+  lifecycleManagerPort,
+  userIdentifier,
+  shuffleId,
+  throwsFetchFailure,
+  numMappers,
+  dependency,
+  extension) {}

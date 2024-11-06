@@ -35,10 +35,13 @@ object GpuPartitioning {
 }
 
 trait GpuPartitioning extends Partitioning {
-  private[this] val (maxCompressionBatchSize, _useGPUShuffle, _useMultiThreadedShuffle) = {
+  private[this] val (maxCompressionBatchSize,
+  _useGPUShuffle, _useMultiThreadedShuffle, _useCelebornShuffle)
+  = {
     val rapidsConf = new RapidsConf(SQLConf.get)
     (rapidsConf.shuffleCompressionMaxBatchMemory,
       GpuShuffleEnv.useGPUShuffle(rapidsConf),
+      GpuShuffleEnv.useMultiThreadedShuffle(rapidsConf),
       GpuShuffleEnv.useMultiThreadedShuffle(rapidsConf))
   }
 
@@ -50,6 +53,8 @@ trait GpuPartitioning extends Partitioning {
   def usesGPUShuffle: Boolean = _useGPUShuffle
 
   def usesMultiThreadedShuffle: Boolean = _useMultiThreadedShuffle
+
+  def usesCelebornShuffle: Boolean = _useCelebornShuffle
 
   def sliceBatch(vectors: Array[RapidsHostColumnVector], start: Int, end: Int): ColumnarBatch = {
     var ret: ColumnarBatch = null

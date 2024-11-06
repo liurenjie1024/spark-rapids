@@ -21,7 +21,6 @@ import java.util.Optional
 import java.util.concurrent.{Callable, ConcurrentHashMap, ExecutionException, Executors, Future, LinkedBlockingQueue, TimeUnit}
 import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
-import scala.collection
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
@@ -32,22 +31,22 @@ import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.format.TableMeta
 import com.nvidia.spark.rapids.shuffle.{RapidsShuffleRequestHandler, RapidsShuffleServer, RapidsShuffleTransport}
-import org.apache.spark.{InterruptibleIterator, MapOutputTracker, ShuffleDependency, SparkConf, SparkEnv, TaskContext}
 
+import org.apache.spark.{InterruptibleIterator, MapOutputTracker, ShuffleDependency, SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.executor.ShuffleWriteMetrics
 import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.network.buffer.ManagedBuffer
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerManager
-import org.apache.spark.shuffle.{ShuffleWriter, _}
+import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.api._
-import org.apache.spark.shuffle.rapids.celeborn.{GpuCelebornShuffleHandle, GpuCelebornShuffleReader, GpuCelebornShuffleWriter}
+import org.apache.spark.shuffle.rapids.celeborn.{GpuCelebornManager, GpuCelebornShuffleHandle}
 import org.apache.spark.shuffle.sort.{BypassMergeSortShuffleHandle, SortShuffleManager}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.rapids.shims.{GpuShuffleBlockResolver, RapidsShuffleThreadedReader, RapidsShuffleThreadedWriter}
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.storage.{RapidsShuffleBlockFetcherIterator, _}
+import org.apache.spark.storage._
 import org.apache.spark.util.{CompletionIterator, Utils}
 import org.apache.spark.util.collection.{ExternalSorter, OpenHashSet}
 
@@ -1376,6 +1375,14 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
     }
   }
 
+  private[this] lazy val celebornManager: Option[GpuCelebornManager] = {
+    if (rapidsConf.isCelebornShuffleManagerMode) {
+      Some(new GpuCelebornManager(conf, isDriver))
+    } else {
+      None
+    }
+  }
+
   override def registerShuffle[K, V, C](
       shuffleId: Int,
       dependency: ShuffleDependency[K, V, C]): ShuffleHandle = {
@@ -1388,8 +1395,8 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
       case gpuDependency: GpuShuffleDependency[K, V, C] if gpuDependency.useGPUShuffle =>
         new GpuShuffleHandle(orig,
           dependency.asInstanceOf[GpuShuffleDependency[K, V, V]])
-      case gpuDependency: GpuShuffleDependency[K, V, C] if
-        gpuDependency.useCelebornShuffle => new GpuCelebornShuffleHandle(gpuDependency)
+      case gpuDependency: GpuShuffleDependency[K, V, C] if gpuDependency.useCelebornShuffle =>
+        celebornManager.get.registerShuffle(shuffleId, gpuDependency)
       case _ => orig
     }
   }
@@ -1423,7 +1430,8 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
       handle: ShuffleHandle, mapId: Long, context: TaskContext,
     metricsReporter: ShuffleWriteMetricsReporter): ShuffleWriter[K, V] = {
     handle match {
-      case _: GpuCelebornShuffleHandle[_, _, _] => new GpuCelebornShuffleWriter[K, V]
+      case gpu: GpuCelebornShuffleHandle[K, V, V] =>
+        celebornManager.get.getWriter(gpu, mapId, context, metricsReporter)
       case gpu: GpuShuffleHandle[_, _] =>
         registerGpuShuffle(handle.shuffleId)
         new RapidsCachingWriter(
@@ -1479,7 +1487,9 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
       context: TaskContext,
       metrics: ShuffleReadMetricsReporter): ShuffleReader[K, C] = {
     handle match {
-      case _: GpuCelebornShuffleHandle[_, _, _] => new GpuCelebornShuffleReader[K, C]
+      case gpu: GpuCelebornShuffleHandle[K, _, C] =>
+        celebornManager.get.getReader(gpu, startMapIndex, endMapIndex, startPartition,
+          endPartition, context, metrics)
       case gpuHandle: GpuShuffleHandle[_, _] =>
         logInfo(s"Asking map output tracker for dependency ${gpuHandle.dependency}, " +
             s"map output sizes for: ${gpuHandle.shuffleId}, parts=$startPartition-$endPartition")
@@ -1591,6 +1601,7 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
           "unregisterShuffle called with unexpected resolver " +
             s"$shuffleBlockResolver and blocks left to be cleaned")
     }
+    celebornManager.foreach(_.unregisterShuffle(shuffleId))
     wrapped.unregisterShuffle(shuffleId)
   }
 
@@ -1602,6 +1613,7 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
       stopped = true
       server.foreach(_.close())
       transport.foreach(_.close())
+      celebornManager.foreach(_.stop())
       if (rapidsConf.isMultiThreadedShuffleManagerMode) {
         RapidsShuffleInternalManagerBase.stopThreadPool()
       }

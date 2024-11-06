@@ -3,24 +3,24 @@ package org.apache.spark.shuffle.rapids.celeborn
 import java.io.IOException
 import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
 
-import scala.reflect.ClassTag
-
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
-
 import org.apache.spark.{SparkEnv, TaskContext}
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SortBasedPusher, SparkUtils}
-import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, OBJECT_CLASS_TAG}
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.DEFAULT_INITIAL_SER_BUFFER_SIZE
 import org.apache.spark.sql.rapids.GpuShuffleDependency
+import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 
 
 class GpuCelebornShuffleWriter[K, V](
     val dep: GpuShuffleDependency[K, V, V],
     val numMappers: Int,
+    val mapId: Int,
     val taskContext: TaskContext,
     val conf: CelebornConf,
     val shuffleClient: ShuffleClient,
@@ -31,7 +31,6 @@ class GpuCelebornShuffleWriter[K, V](
   private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
   private val serOutputStream = dep.serializer.newInstance().serializeStream(serBuffer)
 
-  private val mapId = taskContext.partitionId()
   private val numPartitions = dep.partitioner.numPartitions
   private val mapStatusLengths = Array.fill(numPartitions)(new LongAdder())
   private val pusher = new SortBasedPusher(taskContext.taskMemoryManager,
@@ -58,11 +57,12 @@ class GpuCelebornShuffleWriter[K, V](
 
 
   private def doWrite(records: Iterator[Product2[K, V]]): Unit = {
-    for ((k, v) <- records) {
-     val partitionId = dep.partitioner.getPartition(k)
-      serBuffer.reset();
-      serOutputStream.writeKey(k, OBJECT_CLASS_TAG)
-      serOutputStream.writeValue(v, OBJECT_CLASS_TAG)
+    for (r <- records) {
+      val partitionId = r._1.asInstanceOf[Int]
+      val batch = r._2.asInstanceOf[ColumnarBatch]
+      serBuffer.reset()
+      serOutputStream.writeKey(partitionId)
+      serOutputStream.writeValue(batch)
       serOutputStream.flush()
 
       val serializedRecordSize = serBuffer.size()
@@ -169,5 +169,4 @@ class GpuCelebornShuffleWriter[K, V](
 
 object GpuCelebornShuffleWriter {
   private val DEFAULT_INITIAL_SER_BUFFER_SIZE: Int = 1024 * 1024
-  private val OBJECT_CLASS_TAG: ClassTag[AnyRef]  = ClassTag[AnyRef]
 }

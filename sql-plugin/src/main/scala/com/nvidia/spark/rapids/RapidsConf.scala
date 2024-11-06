@@ -23,9 +23,10 @@ import scala.collection.mutable.{HashMap, ListBuffer}
 import ai.rapids.cudf.Cuda
 import com.nvidia.spark.rapids.jni.RmmSpark.OomInjectionType
 import com.nvidia.spark.rapids.lore.{LoreId, OutputLoreId}
+import com.nvidia.spark.rapids.RapidsConf.RapidsShuffleManagerMode.UCX
 import java.util
-
 import org.apache.spark.SparkConf
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.{ByteUnit, JavaUtils}
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry
@@ -1699,7 +1700,7 @@ val GPU_COREDUMP_PIPE_PATTERN = conf("spark.rapids.gpu.coreDump.pipePattern")
     .createWithDefault(true)
 
   object RapidsShuffleManagerMode extends Enumeration {
-    val UCX, CACHE_ONLY, MULTITHREADED = Value
+    val UCX, CACHE_ONLY, MULTITHREADED, CELEBORN = Value
   }
 
   val SHUFFLE_MANAGER_MODE = conf("spark.rapids.shuffle.mode")
@@ -3057,6 +3058,10 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
       .withName(get(SHUFFLE_MANAGER_MODE)) == RapidsShuffleManagerMode.CACHE_ONLY
 
   def isGPUShuffle: Boolean = isUCXShuffleManagerMode || isCacheOnlyShuffleManagerMode
+
+  def isCelebornShuffleManagerMode: Boolean =
+    RapidsShuffleManagerMode
+      .withName(get(SHUFFLE_MANAGER_MODE)) == RapidsShuffleManagerMode.CELEBORN
 
   lazy val shimsProviderOverride: Option[String] = get(SHIMS_PROVIDER_OVERRIDE)
 
