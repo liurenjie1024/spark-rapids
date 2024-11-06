@@ -4,15 +4,17 @@ import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
 import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
+import org.apache.spark.shuffle.{ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter}
 import org.apache.spark.shuffle.celeborn.{ExecutorShuffleIdTracker, SendBufferPool, SparkUtils}
 import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornManager.executorCores
-import org.apache.spark.shuffle.{ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.util.Utils
 
-class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Boolean) {
+class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Boolean) extends
+  Logging {
   private val celebornConf = SparkUtils.fromSparkConf(conf)
   private val shuffleIdTracker = new ExecutorShuffleIdTracker();
   private val cores = executorCores(conf)
@@ -27,6 +29,9 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   : GpuCelebornShuffleHandle[K, V, C] = {
     appUniqueId = Some(SparkUtils.appUniqueId(dependency.rdd.context))
     initLifecycleManager()
+
+    logInfo(s"Register gpu celeborn shuffle $shuffleId with appUniqueId ${appUniqueId.get}, " +
+      s"shuffle id: $shuffleId")
 
     lifecycleManager.get
       .registerAppShuffleDeterminate(
@@ -46,6 +51,8 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   }
 
   def unregisterShuffle(shuffleId: Int): Boolean = {
+    logInfo(s"Unregister gpu celeborn shuffle  with appUniqueId ${appUniqueId.get}, " +
+      s"shuffle id: $shuffleId")
     lifecycleManager.foreach { m =>
       m.unregisterAppShuffle(shuffleId, celebornConf.clientFetchThrowsFetchFailure)
     }
@@ -56,6 +63,7 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   }
 
   def stop(): Unit = {
+    logInfo(s"Stop gpu celeborn manager with appUniqueId ${appUniqueId}")
     shuffleClient.foreach { s =>
       s.shutdown()
       ShuffleClient.reset()
@@ -72,6 +80,7 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       context: TaskContext,
       metrics: ShuffleWriteMetricsReporter
   ): GpuCelebornShuffleWriter[K, V] = {
+    logInfo(s"Get writer for mapId $mapId, shuffleId ${handle.shuffleId}")
     if (shuffleClient.isEmpty) {
       shuffleClient = Some(ShuffleClient.get(
         handle.appUniqueId,
@@ -91,16 +100,19 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       metrics,
       SendBufferPool.get(cores, sendBufferPoolCheckInterval, sendBufferPoolExpireTimeout))
   }
+
   def getReader[K, C](handle: GpuCelebornShuffleHandle[K, _, C],
       startPartition: Int, endPartition: Int,
       context: TaskContext, metrics: ShuffleReadMetricsReporter): GpuCelebornShuffleReader[K, C] = {
-    new GpuCelebornShuffleReader[K, C](handle, 0, Int.MaxValue, startPartition, endPartition,
-      context,  celebornConf, metrics, shuffleIdTracker)
+    getReader(handle, 0, Int.MaxValue, startPartition, endPartition, context, metrics)
   }
 
   def getReader[K, C](handle: GpuCelebornShuffleHandle[K, _, C],
       startMapIndex: Int, endMapIndex: Int, startPartition: Int, endPartition: Int,
       context: TaskContext, metrics: ShuffleReadMetricsReporter): GpuCelebornShuffleReader[K, C] = {
+    logInfo(s"Get reader for shuffleId ${handle.shuffleId}, startMapIndex $startMapIndex, " +
+      s"endMapIndex $endMapIndex, startPartition $startPartition, endPartition $endPartition")
+
     new GpuCelebornShuffleReader[K, C](handle, startPartition, endPartition, startMapIndex,
       endMapIndex, context,  celebornConf, metrics, shuffleIdTracker)
   }
