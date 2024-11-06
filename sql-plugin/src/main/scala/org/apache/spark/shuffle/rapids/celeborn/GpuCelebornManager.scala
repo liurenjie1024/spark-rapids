@@ -122,9 +122,9 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
     // need to ensure that LifecycleManager will only be created once. Parallelism needs to be
     // considered in this place, because if there is one RDD that depends on multiple RDDs
     // at the same time, it may bring parallel `register shuffle`, such as Join in Sql.
-    if (isDriver && lifecycleManager == null) {
+    if (isDriver && lifecycleManager.isEmpty) {
       this.synchronized {
-        if (lifecycleManager == null) {
+        if (lifecycleManager.isEmpty) {
           lifecycleManager = Some(new LifecycleManager(appUniqueId.get, celebornConf))
           if (celebornConf.clientFetchThrowsFetchFailure) {
             val mapOutputTracker = SparkEnv.get
