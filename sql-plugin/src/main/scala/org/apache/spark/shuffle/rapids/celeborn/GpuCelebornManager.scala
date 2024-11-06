@@ -93,7 +93,6 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
 
     new GpuCelebornShuffleWriter[K, V](handle.dependency,
       handle.numMappers,
-      mapId.toInt,
       context,
       celebornConf,
       shuffleClient.get,

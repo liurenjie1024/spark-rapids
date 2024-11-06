@@ -5,8 +5,8 @@ import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
 
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
-import org.apache.spark.{SparkEnv, TaskContext}
 
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
@@ -20,7 +20,6 @@ import org.apache.spark.unsafe.Platform
 class GpuCelebornShuffleWriter[K, V](
     val dep: GpuShuffleDependency[K, V, V],
     val numMappers: Int,
-    val mapId: Int,
     val taskContext: TaskContext,
     val conf: CelebornConf,
     val shuffleClient: ShuffleClient,
@@ -30,6 +29,7 @@ class GpuCelebornShuffleWriter[K, V](
 
   private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
   private val serOutputStream = dep.serializer.newInstance().serializeStream(serBuffer)
+  private val mapId = taskContext.partitionId()
 
   private val numPartitions = dep.partitioner.numPartitions
   private val mapStatusLengths = Array.fill(numPartitions)(new LongAdder())
