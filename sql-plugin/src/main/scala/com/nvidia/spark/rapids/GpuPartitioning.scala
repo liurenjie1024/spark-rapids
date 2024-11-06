@@ -42,7 +42,7 @@ trait GpuPartitioning extends Partitioning {
     (rapidsConf.shuffleCompressionMaxBatchMemory,
       GpuShuffleEnv.useGPUShuffle(rapidsConf),
       GpuShuffleEnv.useMultiThreadedShuffle(rapidsConf),
-      GpuShuffleEnv.useMultiThreadedShuffle(rapidsConf))
+      GpuShuffleEnv.useCelebornShuffle(rapidsConf))
   }
 
   final def columnarEval(batch: ColumnarBatch): GpuColumnVector = {

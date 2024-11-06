@@ -2,8 +2,8 @@ package org.apache.spark.shuffle.rapids.celeborn
 
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
-import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
 
+import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
@@ -63,7 +63,7 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   }
 
   def stop(): Unit = {
-    logInfo(s"Stop gpu celeborn manager with appUniqueId ${appUniqueId}")
+    logInfo(s"Stop gpu celeborn manager with appUniqueId $appUniqueId")
     shuffleClient.foreach { s =>
       s.shutdown()
       ShuffleClient.reset()
