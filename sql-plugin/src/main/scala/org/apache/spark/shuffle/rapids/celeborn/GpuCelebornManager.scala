@@ -30,7 +30,7 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
     appUniqueId = Some(SparkUtils.appUniqueId(dependency.rdd.context))
     initLifecycleManager()
 
-    logInfo(s"Register gpu celeborn shuffle $shuffleId with appUniqueId ${appUniqueId.get}, " +
+    logWarning(s"Register gpu celeborn shuffle $shuffleId with appUniqueId ${appUniqueId.get}, " +
       s"shuffle id: $shuffleId")
 
     lifecycleManager.get

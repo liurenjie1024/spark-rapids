@@ -1259,8 +1259,10 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
 
   protected val wrapped = new SortShuffleManager(conf)
 
-  private[this] val transportEnabledMessage =
-    if (!rapidsConf.isUCXShuffleManagerMode) {
+  private[this] val transportEnabledMessage = {
+    if (rapidsConf.isCelebornShuffleManagerMode) {
+      "Gpu Celeborn shuffle mode"
+    } else if (!rapidsConf.isUCXShuffleManagerMode) {
       if (rapidsConf.isCacheOnlyShuffleManagerMode) {
         "Transport disabled (local cached blocks only)"
       } else {
@@ -1272,6 +1274,7 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
     } else {
       s"Transport enabled (remote fetches will use ${rapidsConf.shuffleTransportClassName}"
     }
+  }
 
   logWarning(s"Rapids Shuffle Plugin enabled. ${transportEnabledMessage}. To disable the " +
       s"RAPIDS Shuffle Manager set `${RapidsConf.SHUFFLE_MANAGER_ENABLED}` to false")
@@ -1377,6 +1380,7 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
 
   private[this] lazy val celebornManager: Option[GpuCelebornManager] = {
     if (rapidsConf.isCelebornShuffleManagerMode) {
+      logWarning("Gpu celeborn is experimental")
       Some(new GpuCelebornManager(conf, isDriver))
     } else {
       None
