@@ -28,7 +28,6 @@ class GpuCelebornShuffleWriter[K, V](
     val shuffleClient: ShuffleClient,
     val metricsReporter: ShuffleWriteMetricsReporter,
     val sendBufferPool: SendBufferPool,
-    val extraMetrics: Map[String, GpuMetric]
 ) extends ShuffleWriter[K, V] with Logging {
 
   private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
@@ -53,6 +52,7 @@ class GpuCelebornShuffleWriter[K, V](
   private var peakMemoryUsedBytes = 0L
   private val stopping: AtomicBoolean = new AtomicBoolean(false)
 
+  private val extraMetrics = GpuMetric.wrap(dep.metrics)
   private val accuBufferTime: GpuMetric = extraMetrics(METRIC_ACCU_BUFFER_TIME)
   private val doPushTime: GpuMetric = extraMetrics(METRIC_DO_PUSH_TIME)
   private val closeTime: GpuMetric = extraMetrics(METRIC_CLOSE_TIME)
