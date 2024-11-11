@@ -27,6 +27,7 @@ import org.apache.spark.{MapOutputStatistics, ShuffleDependency}
 import org.apache.spark.rapids.shims.GpuShuffleExchangeExec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
@@ -197,7 +198,8 @@ abstract class GpuShuffleExchangeExecBase(
   override def coalesceAfter: Boolean = useGPUShuffle
 
   private lazy val writeMetrics =
-    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext) ++
+      GpuCelebornShuffleWriter.createMetrics(sparkContext)
   lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val additionalMetrics : Map[String, GpuMetric] = Map(
