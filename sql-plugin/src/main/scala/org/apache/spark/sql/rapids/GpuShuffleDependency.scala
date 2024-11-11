@@ -18,6 +18,8 @@ package org.apache.spark.sql.rapids
 
 import scala.reflect.ClassTag
 
+import com.nvidia.spark.rapids.GpuMetric
+
 import org.apache.spark.{Aggregator, Partitioner, ShuffleDependency, SparkEnv}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
@@ -37,9 +39,15 @@ class GpuShuffleDependency[K: ClassTag, V: ClassTag, C: ClassTag](
     val useCelebornShuffle: Boolean = false,
     val useGPUShuffle: Boolean,
     val useMultiThreadedShuffle: Boolean,
-    val metrics: Map[String, SQLMetric] = Map.empty)
+    val metrics: Map[String, GpuMetric] = Map.empty)
   extends ShuffleDependency[K, V, C](rdd, partitioner, serializer, keyOrdering,
     aggregator, mapSideCombine, shuffleWriterProcessor) {
+
+  private lazy val _sqlMetrics: Map[String, SQLMetric] = {
+    GpuMetric.unwrap(metrics)
+  }
+
+  def sqlMetrics: Map[String, SQLMetric] = _sqlMetrics
 
   override def toString: String = "GPU Shuffle Dependency"
 }

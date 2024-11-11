@@ -27,6 +27,7 @@ import org.apache.spark.{MapOutputStatistics, ShuffleDependency}
 import org.apache.spark.rapids.shims.GpuShuffleExchangeExec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
@@ -198,6 +199,7 @@ abstract class GpuShuffleExchangeExecBase(
 
   private lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+
   lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val additionalMetrics : Map[String, GpuMetric] = Map(
@@ -219,7 +221,8 @@ abstract class GpuShuffleExchangeExecBase(
         createNanoTimingMetric(DEBUG_LEVEL,"rs. shuffle write io time"),
     "rapidsShuffleReadTime" ->
         createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time")
-  ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics)
+  ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics) ++
+    GpuCelebornShuffleWriter.createMetrics(sparkContext)
 
   // Spark doesn't report totalTime for this operator so we override metrics
   override lazy val allMetrics: Map[String, GpuMetric] = Map(
@@ -407,7 +410,7 @@ object GpuShuffleExchangeExecBase {
       useGPUShuffle = useGPUShuffle,
       useMultiThreadedShuffle = useMultiThreadedShuffle,
       useCelebornShuffle = useCelebornShuffle,
-      metrics = GpuMetric.unwrap(additionalMetrics))
+      metrics = additionalMetrics)
 
     dependency
   }

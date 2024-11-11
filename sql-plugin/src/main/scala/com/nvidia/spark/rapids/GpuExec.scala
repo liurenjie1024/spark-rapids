@@ -25,6 +25,7 @@ import com.nvidia.spark.rapids.lore.{GpuLore, GpuLoreDumpRDD}
 import com.nvidia.spark.rapids.lore.GpuLore.{loreIdOf, LORE_DUMP_PATH_TAG, LORE_DUMP_RDD_TAG}
 import com.nvidia.spark.rapids.shims.SparkShimImpl
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkContext
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.rapids.LocationPreservingMapPartitionsRDD
@@ -273,6 +274,16 @@ object GpuExec {
     case gpu: GpuExec => gpu.outputBatching
     case _ => null
   }
+
+  def createNanoTimingMetric(sc: SparkContext, name: String): GpuMetric = {
+    createMetricInternal(SQLMetrics.createNanoTimingMetric(sc, name))
+  }
+
+  private def createMetricInternal(f: => SQLMetric): GpuMetric = {
+    // only enable companion metrics (excluding semaphore wait time) for DEBUG_LEVEL
+    WrappedGpuMetric(f, withMetricsExclSemWait = true)
+  }
+
 
   val TASK_METRICS_TAG = new TreeNodeTag[GpuTaskMetrics]("gpu_task_metrics")
 }
