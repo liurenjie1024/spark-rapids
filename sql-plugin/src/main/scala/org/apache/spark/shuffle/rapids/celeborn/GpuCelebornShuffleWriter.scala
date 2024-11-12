@@ -6,8 +6,8 @@ import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
 import com.nvidia.spark.rapids.GpuMetric
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
-import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
 
+import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
@@ -64,7 +64,9 @@ class GpuCelebornShuffleWriter[K, V](
   override def write(records: Iterator[Product2[K, V]]): Unit = {
     val start = System.nanoTime()
     doWrite(records)
-    closeTime.ns(close())
+    GpuMetric.ns(closeTime) {
+      close()
+    }
     metricsReporter.incWriteTime(System.nanoTime() - start)
   }
 
@@ -81,17 +83,22 @@ class GpuCelebornShuffleWriter[K, V](
       val serializedRecordSize = serBuffer.size()
 
       if (serializedRecordSize > pushBufferMaxSize) {
-        pushGiantRecordTime.ns(pushGiantRecord(partitionId, serBuffer.getBuf, serializedRecordSize))
+        GpuMetric.ns(pushGiantRecordTime) {
+          pushGiantRecord(partitionId, serBuffer.getBuf, serializedRecordSize)
+        }
       } else {
-        var success = accuBufferTime.ns(pusher.insertRecord(serBuffer.getBuf,
-          Platform.BYTE_ARRAY_OFFSET,
-          serializedRecordSize, partitionId, false))
-
+        var success = GpuMetric.ns(accuBufferTime) {
+          pusher.insertRecord(serBuffer.getBuf,
+            Platform.BYTE_ARRAY_OFFSET,
+            serializedRecordSize, partitionId, false)
+        }
         if (!success) {
           doPush()
-          success = accuBufferTime.ns(pusher.insertRecord(serBuffer.getBuf,
-            Platform.BYTE_ARRAY_OFFSET,
-            serializedRecordSize, partitionId, false))
+          success = GpuMetric.ns(accuBufferTime) {
+            pusher.insertRecord(serBuffer.getBuf,
+              Platform.BYTE_ARRAY_OFFSET,
+              serializedRecordSize, partitionId, false)
+          }
 
           if (!success) {
             throw new IOException("Unable to push after switching pusher!")
@@ -118,7 +125,9 @@ class GpuCelebornShuffleWriter[K, V](
   }
 
   private def doPush(): Unit = {
-    doPushTime.ns(pusher.pushData(true))
+    GpuMetric.ns(doPushTime) {
+      pusher.pushData(true)
+    }
   }
 
   private def close(): Unit = {
@@ -134,7 +143,7 @@ class GpuCelebornShuffleWriter[K, V](
   }
 
   override def stop(success: Boolean): Option[MapStatus] = {
-    stopTime.ns {
+    GpuMetric.ns(stopTime) {
       try {
         taskContext.taskMetrics().incPeakExecutionMemory(getPeakMemoryUsed)
         if (!stopping.get()) {
@@ -183,20 +192,20 @@ object GpuCelebornShuffleWriter {
   private val DEFAULT_INITIAL_SER_BUFFER_SIZE: Int = 1024 * 1024
 
   private val METRIC_ACCU_BUFFER_TIME = "accumulateBufferTime"
-  private val METRIC_DO_PUSH_TIME = "doPushTime"
-  private val METRIC_CLOSE_TIME = "closeTime"
-  private val METRIC_STOP_TIME = "stopTime"
-  private val METRIC_PUSH_GIANT_RECORD_TIME = "pushGiantRecordTime"
+  private val METRIC_DO_PUSH_TIME = "celeborn.doPushTime"
+  private val METRIC_CLOSE_TIME = "celeborn.closeTime"
+  private val METRIC_STOP_TIME = "celeborn.stopTime"
+  private val METRIC_PUSH_GIANT_RECORD_TIME = "celeborn.pushGiantRecordTime"
 
   def createMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
       METRIC_ACCU_BUFFER_TIME -> createNanoTimingMetric(sc,
-        "accumulating buffer time in celeborn writer"),
+        "celeborn accumulating buffer time "),
       METRIC_PUSH_GIANT_RECORD_TIME -> createNanoTimingMetric(sc,
-        "push giant record time in celeborn writer"),
-      METRIC_DO_PUSH_TIME -> createNanoTimingMetric(sc, "do push time in celeborn writer"),
-      METRIC_CLOSE_TIME -> createNanoTimingMetric(sc, "close time in celeborn writer"),
-      METRIC_STOP_TIME -> createNanoTimingMetric(sc, "stop time in celeborn writer")
+        "celeborn push giant record time"),
+      METRIC_DO_PUSH_TIME -> createNanoTimingMetric(sc, "celeborn do push time"),
+      METRIC_CLOSE_TIME -> createNanoTimingMetric(sc, "celeborn close time"),
+      METRIC_STOP_TIME -> createNanoTimingMetric(sc, "celeborn stop time")
     )
   }
 }
