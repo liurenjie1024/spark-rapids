@@ -51,7 +51,7 @@ class GpuCelebornShuffleWriter[K, V](
   private var peakMemoryUsedBytes = 0L
   private val stopping: AtomicBoolean = new AtomicBoolean(false)
 
-  private val extraMetrics = GpuMetric.wrap(dep.metrics)
+  private val extraMetrics = dep.metrics
   private val accuBufferTime: GpuMetric = extraMetrics(METRIC_ACCU_BUFFER_TIME)
   private val doPushTime: GpuMetric = extraMetrics(METRIC_DO_PUSH_TIME)
   private val pushGiantRecordTime: GpuMetric = extraMetrics(METRIC_PUSH_GIANT_RECORD_TIME)

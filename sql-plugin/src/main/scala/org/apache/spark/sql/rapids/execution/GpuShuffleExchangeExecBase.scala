@@ -410,7 +410,7 @@ object GpuShuffleExchangeExecBase {
       useGPUShuffle = useGPUShuffle,
       useMultiThreadedShuffle = useMultiThreadedShuffle,
       useCelebornShuffle = useCelebornShuffle,
-      metrics = GpuMetric.unwrap(additionalMetrics))
+      metrics = additionalMetrics)
 
     dependency
   }
