@@ -3,6 +3,7 @@ package org.apache.spark.shuffle.rapids.celeborn
 import java.io.IOException
 import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
 
+import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
 import com.nvidia.spark.rapids.GpuMetric
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
@@ -13,8 +14,6 @@ import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SortBasedPusher, SparkUtils}
 import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_ACCU_BUFFER_TIME, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_PUSH_GIANT_RECORD_TIME, METRIC_STOP_TIME}
-import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.execution.metric.SQLMetrics.createNanoTimingMetric
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
@@ -59,8 +58,6 @@ class GpuCelebornShuffleWriter[K, V](
   private val doWriteTime: GpuMetric = extraMetrics(METRIC_DO_WRITE_TIME)
   private val closeTime: GpuMetric = extraMetrics(METRIC_CLOSE_TIME)
   private val stopTime: GpuMetric = extraMetrics(METRIC_STOP_TIME)
-
-
 
   override def write(records: Iterator[Product2[K, V]]): Unit = {
     val start = System.nanoTime()
@@ -202,7 +199,7 @@ object GpuCelebornShuffleWriter {
   private val METRIC_STOP_TIME = "celeborn.stopTime"
   private val METRIC_PUSH_GIANT_RECORD_TIME = "celeborn.pushGiantRecordTime"
 
-  def createMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+  def createMetrics(sc: SparkContext): Map[String, GpuMetric] = {
     Map(
       METRIC_ACCU_BUFFER_TIME -> createNanoTimingMetric(sc,
         "celeborn accumulating buffer time "),

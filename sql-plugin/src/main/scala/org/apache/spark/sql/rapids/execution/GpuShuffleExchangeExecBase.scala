@@ -198,8 +198,8 @@ abstract class GpuShuffleExchangeExecBase(
   override def coalesceAfter: Boolean = useGPUShuffle
 
   private lazy val writeMetrics =
-    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext) ++
-      GpuCelebornShuffleWriter.createMetrics(sparkContext)
+    SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
+
   lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
   override lazy val additionalMetrics : Map[String, GpuMetric] = Map(
@@ -221,7 +221,8 @@ abstract class GpuShuffleExchangeExecBase(
         createNanoTimingMetric(DEBUG_LEVEL,"rs. shuffle write io time"),
     "rapidsShuffleReadTime" ->
         createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time")
-  ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics)
+  ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics) ++
+    GpuCelebornShuffleWriter.createMetrics(sparkContext)
 
   // Spark doesn't report totalTime for this operator so we override metrics
   override lazy val allMetrics: Map[String, GpuMetric] = Map(
