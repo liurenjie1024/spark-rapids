@@ -61,8 +61,10 @@ class GpuCelebornShuffleWriter[K, V](
 
 
   override def write(records: Iterator[Product2[K, V]]): Unit = {
+    val start = System.nanoTime()
     doWrite(records)
     closeTime.ns(close())
+    metricsReporter.incWriteTime(System.nanoTime() - start)
   }
 
 
@@ -102,7 +104,6 @@ class GpuCelebornShuffleWriter[K, V](
 
   private def pushGiantRecord(partitionId: Int, buffer: Array[Byte], numBytes: Int): Unit = {
     logDebug(s"Pushing giant record of size $numBytes to partition $partitionId")
-    val startTime = System.nanoTime()
     val bytesWritten = shuffleClient.pushData(dep.shuffleId, mapId, taskContext.attemptNumber(),
       partitionId,
       buffer,
@@ -113,29 +114,22 @@ class GpuCelebornShuffleWriter[K, V](
 
     mapStatusLengths(partitionId).add(bytesWritten)
     metricsReporter.incRecordsWritten(bytesWritten)
-    metricsReporter.incWriteTime(System.nanoTime() - startTime)
   }
 
   private def doPush(): Unit = {
-    val start = System.nanoTime()
     doPushTime.ns(pusher.pushData(true))
-    metricsReporter.incWriteTime(System.nanoTime() - start)
   }
 
   private def close(): Unit = {
     logInfo(s"Closing writer for mapId $mapId, memory used ${pusher.getUsed}")
 
-    val start = System.nanoTime()
     pusher.pushData(false)
     pusher.close()
 
     shuffleClient.pushMergedData(dep.shuffleId, mapId, taskContext.attemptNumber())
-    metricsReporter.incWriteTime(System.nanoTime() - start)
     metricsReporter.incRecordsWritten(tmpRecordsWritten)
 
-    val waitStartTime = System.nanoTime()
     shuffleClient.mapperEnd(dep.shuffleId, mapId, taskContext.attemptNumber(), numMappers)
-    metricsReporter.incWriteTime(System.nanoTime() - waitStartTime)
   }
 
   override def stop(success: Boolean): Option[MapStatus] = {
