@@ -79,7 +79,10 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
     lifecycleManager.foreach(_.stop())
     lifecycleManager = None
 
-    writerExecutorService.foreach(_.awaitTermination(10, TimeUnit.MINUTES))
+    writerExecutorService.foreach { service =>
+      service.shutdown()
+      service.awaitTermination(10, TimeUnit.MINUTES)
+    })
     writerExecutorService = None
   }
 
