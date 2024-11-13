@@ -9,7 +9,7 @@ import java.io.IOException;
  * Visible for testing
  */
 class DataOutputStreamWriter extends DataWriter {
-    private final byte[] arrayBuffer = new byte[512];
+    private final byte[] arrayBuffer = new byte[1024];
     private final DataOutputStream dout;
 
     public DataOutputStreamWriter(DataOutputStream dout) {
