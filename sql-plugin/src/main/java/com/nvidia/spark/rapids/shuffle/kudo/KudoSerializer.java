@@ -7,6 +7,7 @@ import ai.rapids.cudf.HostColumnVector;
 import ai.rapids.cudf.HostMemoryBuffer;
 import ai.rapids.cudf.Schema;
 import ai.rapids.cudf.Table;
+import com.nvidia.spark.rapids.shuffle.TableUtils;
 import com.nvidia.spark.rapids.shuffle.schema.Visitors;
 import org.apache.commons.lang3.tuple.Pair;
 
@@ -45,7 +46,7 @@ public class KudoSerializer {
           .mapToObj(table::getColumn)
           .map(ColumnView::copyToHost)
           .toArray(HostColumnVector[]::new);
-      return writeToStream(columns, out, rowOffset, numRows);
+      return writeToStream(columns, out, rowOffset, numRows).getLeft();
     } finally {
       if (columns != null) {
         for (HostColumnVector column : columns) {
@@ -55,17 +56,22 @@ public class KudoSerializer {
     }
   }
 
-  public long writeToStream(HostColumnVector[] columns, OutputStream out, long rowOffset, long numRows) {
+  public Pair<Long, WriteMetrics> writeToStream(HostColumnVector[] columns, OutputStream out,
+      long rowOffset,
+      long numRows) {
     if (numRows < 0) {
       throw new IllegalArgumentException("numRows must be >= 0");
     }
 
+    WriteMetrics metrics = new WriteMetrics();
+
     if (numRows == 0 || columns.length == 0) {
-      return 0;
+      return Pair.of(0L, metrics);
     }
 
     try {
-      return writeSliced(columns, writerFrom(out), rowOffset, numRows);
+      long byteWritten = writeSliced(columns, writerFrom(out), rowOffset, numRows, metrics);
+      return Pair.of(byteWritten, metrics);
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
@@ -142,15 +148,24 @@ public class KudoSerializer {
     }
   }
 
-  private static long writeSliced(HostColumnVector[] columns, DataWriter out, long rowOffset, long numRows) throws Exception {
+  private static long writeSliced(HostColumnVector[] columns, DataWriter out, long rowOffset,
+      long numRows, WriteMetrics writeMetrics) throws Exception {
     SerializedTableHeaderCalc headerCalc = new SerializedTableHeaderCalc(rowOffset, numRows, columns.length);
-    Visitors.visitColumns(columns, headerCalc);
+    TableUtils.withTime(() -> Visitors.visitColumns(columns, headerCalc), writeMetrics::addCalcHeaderTime);
+
     SerializedTableHeader header = headerCalc.getHeader();
-    header.writeTo(out);
+    TableUtils.withTime(() ->  {
+      try {
+        header.writeTo(out);
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    }, writeMetrics::addCopyHeaderTime);
 
     long bytesWritten = 0;
     for (BufferType bufferType : Arrays.asList(BufferType.VALIDITY, BufferType.OFFSET, BufferType.DATA)) {
-      SlicedBufferSerializer serializer = new SlicedBufferSerializer(rowOffset, numRows, bufferType, out);
+      SlicedBufferSerializer serializer = new SlicedBufferSerializer(rowOffset, numRows,
+          bufferType, out, writeMetrics);
       Visitors.visitColumns(columns, serializer);
       bytesWritten += serializer.getTotalDataLen();
     }

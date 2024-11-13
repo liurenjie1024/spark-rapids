@@ -61,9 +61,7 @@ class GpuCelebornShuffleWriter[K, V](
 
   override def write(records: Iterator[Product2[K, V]]): Unit = {
     val start = System.nanoTime()
-    doWriteTime.ns {
-      doWrite(records)
-    }
+    doWrite(records)
     GpuMetric.ns(closeTime) {
       close()
     }
@@ -75,40 +73,47 @@ class GpuCelebornShuffleWriter[K, V](
     for (r <- records) {
       val partitionId = r._1.asInstanceOf[Int]
       val batch = r._2.asInstanceOf[ColumnarBatch]
-      serBuffer.reset()
-      serOutputStream.writeKey(partitionId)
-      serOutputStream.writeValue(batch)
-      serOutputStream.flush()
+      doWriteTime.ns {
+        writeOneBatch(partitionId, batch)
+      }
+    }
+  }
+
+  private def writeOneBatch(partitionId: Int, batch: ColumnarBatch): Unit = {
+    serBuffer.reset()
+    serOutputStream.writeKey(partitionId)
+    serOutputStream.writeValue(batch)
+    serOutputStream.flush()
 
 
-      val serializedRecordSize = serBuffer.size()
+    val serializedRecordSize = serBuffer.size()
 
-      if (serializedRecordSize > pushBufferMaxSize) {
-        GpuMetric.ns(pushGiantRecordTime) {
-          pushGiantRecord(partitionId, serBuffer.getBuf, serializedRecordSize)
-        }
-      } else {
-        var success = GpuMetric.ns(accuBufferTime) {
+    if (serializedRecordSize > pushBufferMaxSize) {
+      GpuMetric.ns(pushGiantRecordTime) {
+        pushGiantRecord(partitionId, serBuffer.getBuf, serializedRecordSize)
+      }
+    } else {
+      var success = GpuMetric.ns(accuBufferTime) {
+        pusher.insertRecord(serBuffer.getBuf,
+          Platform.BYTE_ARRAY_OFFSET,
+          serializedRecordSize, partitionId, false)
+      }
+      if (!success) {
+        doPush()
+        success = GpuMetric.ns(accuBufferTime) {
           pusher.insertRecord(serBuffer.getBuf,
             Platform.BYTE_ARRAY_OFFSET,
             serializedRecordSize, partitionId, false)
         }
-        if (!success) {
-          doPush()
-          success = GpuMetric.ns(accuBufferTime) {
-            pusher.insertRecord(serBuffer.getBuf,
-              Platform.BYTE_ARRAY_OFFSET,
-              serializedRecordSize, partitionId, false)
-          }
 
-          if (!success) {
-            throw new IOException("Unable to push after switching pusher!")
-          }
+        if (!success) {
+          throw new IOException("Unable to push after switching pusher!")
         }
       }
-
-      tmpRecordsWritten += 1
     }
+
+    tmpRecordsWritten += 1
+
   }
 
   private def pushGiantRecord(partitionId: Int, buffer: Array[Byte], numBytes: Int): Unit = {

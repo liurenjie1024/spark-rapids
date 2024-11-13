@@ -188,18 +188,27 @@ class KudoSerializedTableColumn(val inner: SerializedTable) extends
  *
  * @note The RAPIDS shuffle does not use this code.
  */
-class GpuColumnarBatchSerializer(dataSize: GpuMetric, serTime: GpuMetric = NoopMetric,
-    deserTime: GpuMetric = NoopMetric, kudo: Option[KudoConf])
+class GpuColumnarBatchSerializer(metrics: Map[String, GpuMetric], kudo: Option[KudoConf])
   extends Serializer with Serializable {
+  private val dataSize: GpuMetric = metrics("dataSize")
+  private val serTime: GpuMetric = metrics("rapidsShuffleSerializationTime")
+  private val deserTime: GpuMetric = metrics("rapidsShuffleDeserializationTime")
+
+
   override def newInstance(): SerializerInstance =
-    new GpuColumnarBatchSerializerInstance(dataSize, kudo, serTime, deserTime)
+    new GpuColumnarBatchSerializerInstance(dataSize, kudo, serTime, deserTime, metrics)
 
   override def supportsRelocationOfSerializedObjects: Boolean = true
 }
 
 private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: Option[KudoConf]
-    , serTime: GpuMetric, deserTime: GpuMetric)
+    , serTime: GpuMetric, deserTime: GpuMetric, metrics: Map[String, GpuMetric])
   extends SerializerInstance {
+
+  private val kudoTime: GpuMetric = metrics("kudoTime")
+  private val kudoCalcHeaderTime: GpuMetric = metrics("kudoCalcHeaderTime")
+  private val kudoCopyHeaderTime: GpuMetric = metrics("kudoCopyHeaderTime")
+  private val kudoCopyBufferTime: GpuMetric = metrics("kudoCopyBufferTime")
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
     private[this] val dOut: DataOutputStream =
@@ -277,7 +286,13 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
 
               val kudo = kudoOpt.get.serializer()
               try {
-                dataSize += kudo.writeToStream(columns, dOut, startRow, numRows)
+                val result = GpuMetric.ns(kudoTime) {
+                  kudo.writeToStream(columns, dOut, startRow, numRows)
+                }
+                dataSize += result.getLeft
+                kudoCalcHeaderTime += result.getRight.getCalcHeaderTime
+                kudoCopyHeaderTime += result.getRight.getCopyHeaderTime
+                kudoCopyBufferTime += result.getRight.getCopyBufferTime
               } catch {
                 case e: Throwable =>
 //                  val sb = new StringBuilder(1024)

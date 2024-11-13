@@ -220,7 +220,12 @@ abstract class GpuShuffleExchangeExecBase(
     "rapidsShuffleWriteIoTime" ->
         createNanoTimingMetric(DEBUG_LEVEL,"rs. shuffle write io time"),
     "rapidsShuffleReadTime" ->
-        createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time")
+        createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time"),
+    "kudoTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo total time"),
+    "kudoCalcHeaderTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo calc header time"),
+    "kudoCopyHeaderTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo copy header time"),
+    "kudoCopyBufferTime" ->
+      createNanoTimingMetric(DEBUG_LEVEL, "kudo copy buffer time"),
   ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics) ++
     GpuCelebornShuffleWriter.createMetrics(sparkContext)
 
@@ -243,10 +248,7 @@ abstract class GpuShuffleExchangeExecBase(
   // This value must be lazy because the child's output may not have been resolved
   // yet in all cases.
   private lazy val serializer: Serializer = {
-    new GpuColumnarBatchSerializer(
-      gpuLongMetric("dataSize"),
-      allMetrics("rapidsShuffleSerializationTime"),
-      allMetrics("rapidsShuffleDeserializationTime"),
+    new GpuColumnarBatchSerializer(allMetrics,
       Kudo.getKudoConf(conf)
     )
   }
