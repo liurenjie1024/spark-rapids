@@ -1,12 +1,12 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
-import java.util.concurrent.{Executors, ExecutorService}
+import java.util.concurrent.{Executors, ExecutorService, TimeUnit}
 
 import com.nvidia.spark.rapids.ThreadFactoryBuilder
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
-
 import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
@@ -79,7 +79,7 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
     lifecycleManager.foreach(_.stop())
     lifecycleManager = None
 
-    writerExecutorService.foreach(_.shutdown())
+    writerExecutorService.foreach(_.awaitTermination(10, TimeUnit.MINUTES))
     writerExecutorService = None
   }
 
