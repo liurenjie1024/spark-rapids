@@ -133,4 +133,10 @@ public class TableUtils {
     timeConsumer.accept(System.nanoTime() - now);
     return ret;
   }
+
+  public static void withTime(Runnable task, LongConsumer timeConsumer) {
+    long now = System.nanoTime();
+    task.run();
+    timeConsumer.accept(System.nanoTime() - now);
+  }
 }
