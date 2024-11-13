@@ -221,6 +221,7 @@ abstract class GpuShuffleExchangeExecBase(
         createNanoTimingMetric(DEBUG_LEVEL,"rs. shuffle write io time"),
     "rapidsShuffleReadTime" ->
         createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time"),
+    "kudoTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo total time"),
     "kudoCalcHeaderTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo calc header time"),
     "kudoCopyHeaderTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo copy header time"),
     "kudoCopyValidityBufferTime" ->

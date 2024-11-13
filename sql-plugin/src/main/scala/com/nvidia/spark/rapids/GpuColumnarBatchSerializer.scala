@@ -205,6 +205,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
     , serTime: GpuMetric, deserTime: GpuMetric, metrics: Map[String, GpuMetric])
   extends SerializerInstance {
 
+  private val kudoTime: GpuMetric = metrics("kudoTime")
   private val kudoCalcHeaderTime: GpuMetric = metrics("kudoCalcHeaderTime")
   private val kudoCopyHeaderTime: GpuMetric = metrics("kudoCopyHeaderTime")
   private val kudoCopyValidityBufferTime: GpuMetric = metrics("kudoCopyValidityBufferTime")
@@ -287,7 +288,9 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
 
               val kudo = kudoOpt.get.serializer()
               try {
-                val result = kudo.writeToStream(columns, dOut, startRow, numRows)
+                val result = GpuMetric.ns(kudoTime) {
+                  kudo.writeToStream(columns, dOut, startRow, numRows)
+                }
                 dataSize += result.getLeft
                 kudoCalcHeaderTime += result.getRight.getCalcHeaderTime
                 kudoCopyHeaderTime += result.getRight.getCopyHeaderTime
