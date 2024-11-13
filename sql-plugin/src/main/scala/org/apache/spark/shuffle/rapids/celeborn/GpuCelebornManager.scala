@@ -5,8 +5,8 @@ import java.util.concurrent.{Executors, ExecutorService}
 import com.nvidia.spark.rapids.ThreadFactoryBuilder
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
-import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
 
+import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
@@ -108,7 +108,8 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       celebornConf,
       shuffleClient.get,
       metrics,
-      SendBufferPool.get(cores, sendBufferPoolCheckInterval, sendBufferPoolExpireTimeout))
+      SendBufferPool.get(cores, sendBufferPoolCheckInterval, sendBufferPoolExpireTimeout),
+      writerExecutorService.get)
   }
 
   def getReader[K, C](handle: GpuCelebornShuffleHandle[K, _, C],
