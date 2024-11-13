@@ -196,13 +196,13 @@ class GpuColumnarBatchSerializer(metrics: Map[String, GpuMetric], kudo: Option[K
 
 
   override def newInstance(): SerializerInstance =
-    new GpuColumnarBatchSerializerInstance(dataSize, kudo, serTime, deserTime)
+    new GpuColumnarBatchSerializerInstance(dataSize, kudo, serTime, deserTime, metrics)
 
   override def supportsRelocationOfSerializedObjects: Boolean = true
 }
 
 private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: Option[KudoConf]
-    , serTime: GpuMetric, deserTime: GpuMetric, metrics: Map[String, GpuMetric] = Map.empty)
+    , serTime: GpuMetric, deserTime: GpuMetric, metrics: Map[String, GpuMetric])
   extends SerializerInstance {
 
   private val kudoCalcHeaderTime: GpuMetric = metrics("kudoCalcHeaderTime")
