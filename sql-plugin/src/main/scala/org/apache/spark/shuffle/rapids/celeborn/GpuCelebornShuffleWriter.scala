@@ -16,7 +16,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SortBasedPusher, SparkUtils}
-import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{writerExecutorService, DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_ACCU_BUFFER_TIME, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_INSERT_RECORD_TIME, METRIC_PUSH_GIANT_RECORD_TIME, METRIC_STOP_TIME}
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_ACCU_BUFFER_TIME, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_INSERT_RECORD_TIME, METRIC_PUSH_GIANT_RECORD_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
@@ -30,6 +30,7 @@ class GpuCelebornShuffleWriter[K, V](
     val shuffleClient: ShuffleClient,
     val metricsReporter: ShuffleWriteMetricsReporter,
     val sendBufferPool: SendBufferPool,
+    val executorService: ExecutorService,
 ) extends ShuffleWriter[K, V] with Logging {
   private val buffer = new ArrayBlockingQueue[(Int, ColumnarBatch)](10)
   private val runnerHolder = new AtomicReference[WriterRunner[K, V]]()
@@ -40,7 +41,7 @@ class GpuCelebornShuffleWriter[K, V](
 
   override def write(records: Iterator[Product2[K, V]]): Unit = {
     val start = System.nanoTime()
-    val f = writerExecutorService.submit(new Runnable {
+    val f = executorService.submit(new Runnable {
       override def run(): Unit = {
         val runner =  new WriterRunner(dep, taskContext, conf, numMappers, shuffleClient,
           metricsReporter, sendBufferPool, buffer)
@@ -63,8 +64,11 @@ class GpuCelebornShuffleWriter[K, V](
       }
       // Wait for task to finish
       f.get()
-    } finally {
-      f.cancel(true)
+    } catch {
+      case t: Throwable =>
+        logError("Exception in write", t)
+        f.cancel(true)
+        throw t
     }
 
     metricsReporter.incWriteTime(System.nanoTime() - start)
@@ -113,11 +117,6 @@ object GpuCelebornShuffleWriter {
   private[celeborn] val METRIC_STOP_TIME = "celeborn.stopTime"
   private[celeborn] val METRIC_PUSH_GIANT_RECORD_TIME = "celeborn.pushGiantRecordTime"
 
-  private[celeborn] lazy val writerExecutorService: ExecutorService = Executors.newCachedThreadPool(
-    new ThreadFactoryBuilder()
-      .setDaemon(false)
-      .setNameFormat("gpu-celeborn-writer-%d")
-      .build())
 
   def createMetrics(sc: SparkContext): Map[String, GpuMetric] = {
     Map(

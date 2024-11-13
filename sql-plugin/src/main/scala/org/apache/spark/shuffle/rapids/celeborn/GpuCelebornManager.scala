@@ -1,9 +1,12 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
+import java.util.concurrent.{Executors, ExecutorService}
+
+import com.nvidia.spark.rapids.ThreadFactoryBuilder
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
-
 import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
@@ -24,6 +27,9 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   private var appUniqueId: Option[String] = None
   private var shuffleClient: Option[ShuffleClient] = None
   private var lifecycleManager: Option[LifecycleManager] = None
+
+  private var writerExecutorService: Option[ExecutorService] = None
+
 
   def registerShuffle[K, V, C](shuffleId: Int, dependency: GpuShuffleDependency[K, V, C])
   : GpuCelebornShuffleHandle[K, V, C] = {
@@ -72,6 +78,9 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
 
     lifecycleManager.foreach(_.stop())
     lifecycleManager = None
+
+    writerExecutorService.foreach(_.shutdown())
+    writerExecutorService = None
   }
 
   def getWriter[K, V](
@@ -81,6 +90,8 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       metrics: ShuffleWriteMetricsReporter
   ): GpuCelebornShuffleWriter[K, V] = {
     logInfo(s"Get writer for mapId $mapId, shuffleId ${handle.shuffleId}")
+    initWriteService()
+
     if (shuffleClient.isEmpty) {
       shuffleClient = Some(ShuffleClient.get(
         handle.appUniqueId,
@@ -134,6 +145,18 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
                 SparkUtils.unregisterAllMapOutput(mapOutputTracker, shuffleId))
           }
         }
+      }
+    }
+  }
+
+  private def initWriteService(): Unit = {
+    if (writerExecutorService.isEmpty) {
+      this.synchronized {
+        writerExecutorService = Some(Executors.newCachedThreadPool(
+          new ThreadFactoryBuilder()
+            .setDaemon(false)
+            .setNameFormat("gpu-celeborn-writer-%d")
+            .build()))
       }
     }
   }
