@@ -180,7 +180,7 @@ class WriterRunner[K, V](
   private def doWrite(): Unit = {
     var done = false
     while (!done) {
-      val r = data.poll(1, TimeUnit.SECONDS)
+      val r = data.take()
 
       val partitionId = r._1
       val batch = r._2
