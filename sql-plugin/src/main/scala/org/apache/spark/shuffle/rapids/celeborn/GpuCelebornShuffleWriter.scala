@@ -35,15 +35,16 @@ class GpuCelebornShuffleWriter[K, V](
   // Used by spark
   private val stopping: AtomicBoolean = new AtomicBoolean(false)
 
-  // Used by write runner thread.
-  private val writeRunner = new WriterRunner(dep, taskContext, conf, numMappers, shuffleClient,
-    metricsReporter, sendBufferPool, buffer)
-
   private val insertRecordTime = dep.metrics(METRIC_INSERT_RECORD_TIME)
 
   override def write(records: Iterator[Product2[K, V]]): Unit = {
     val start = System.nanoTime()
-    val f = writerExecutorService.submit(writeRunner)
+    val f = writerExecutorService.submit(new Runnable {
+      override def run(): Unit = {
+        new WriterRunner(dep, taskContext, conf, numMappers, shuffleClient,
+          metricsReporter, sendBufferPool, buffer).run()
+      }
+    })
     try {
       for (r <- records) {
         val partitionId = r._1.asInstanceOf[Int]
