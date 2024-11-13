@@ -251,9 +251,6 @@ abstract class GpuShuffleExchangeExecBase(
   // yet in all cases.
   private lazy val serializer: Serializer = {
     new GpuColumnarBatchSerializer(allMetrics,
-      gpuLongMetric("dataSize"),
-      allMetrics("rapidsShuffleSerializationTime"),
-      allMetrics("rapidsShuffleDeserializationTime"),
       Kudo.getKudoConf(conf)
     )
   }
