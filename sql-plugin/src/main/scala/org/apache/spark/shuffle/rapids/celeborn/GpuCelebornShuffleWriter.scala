@@ -2,18 +2,21 @@ package org.apache.spark.shuffle.rapids.celeborn
 
 import java.io.IOException
 import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
+import java.util.concurrent.{ArrayBlockingQueue, BlockingQueue, Executors, ExecutorService, Future, TimeUnit}
+
+import scala.annotation.tailrec
 
 import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
-import com.nvidia.spark.rapids.GpuMetric
+import com.nvidia.spark.rapids.{GpuMetric, ThreadFactoryBuilder}
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
-
 import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SortBasedPusher, SparkUtils}
-import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_ACCU_BUFFER_TIME, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_PUSH_GIANT_RECORD_TIME, METRIC_STOP_TIME}
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{writerExecutorService, DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_ACCU_BUFFER_TIME, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_INSERT_RECORD_TIME, METRIC_PUSH_GIANT_RECORD_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
@@ -28,9 +31,116 @@ class GpuCelebornShuffleWriter[K, V](
     val metricsReporter: ShuffleWriteMetricsReporter,
     val sendBufferPool: SendBufferPool,
 ) extends ShuffleWriter[K, V] with Logging {
+  private val buffer = new ArrayBlockingQueue[(Int, ColumnarBatch)](10)
+  // Used by spark
+  private val stopping: AtomicBoolean = new AtomicBoolean(false)
 
+  // Used by write runner thread.
+  private val writeRunner = new WriterRunner(dep, taskContext, conf, numMappers, shuffleClient,
+    metricsReporter, sendBufferPool, buffer)
+
+  private val insertRecordTime = dep.metrics(METRIC_INSERT_RECORD_TIME)
+
+  override def write(records: Iterator[Product2[K, V]]): Unit = {
+    val start = System.nanoTime()
+    val f = writerExecutorService.submit(writeRunner)
+    try {
+      for (r <- records) {
+        val partitionId = r._1.asInstanceOf[Int]
+        val batch = r._2.asInstanceOf[ColumnarBatch]
+
+        insertRecordTime.ns {
+          tryInsertRecord(partitionId, batch, f)
+        }
+      }
+
+      insertRecordTime.ns {
+        tryInsertRecord(-1, null, f)
+      }
+    } finally {
+      f.cancel(true)
+    }
+
+    metricsReporter.incWriteTime(System.nanoTime() - start)
+  }
+
+  @tailrec
+  private def tryInsertRecord(partitionId: Int, batch: ColumnarBatch, f: Future[_]): Unit = {
+    val success = buffer.offer((partitionId, batch), 10, TimeUnit.SECONDS)
+    if (!success) {
+      if (f.isDone) {
+        // Exception happened in writeRunner
+        f.get()
+        throw new IllegalStateException("Celeborn writer thread is expected to throw exception, " +
+          "but in fact not")
+      } else {
+        tryInsertRecord(partitionId, batch, f)
+      }
+    }
+  }
+
+
+  override def stop(success: Boolean): Option[MapStatus] = {
+    taskContext.taskMetrics().incPeakExecutionMemory(writeRunner.getPeakMemoryUsed)
+    if (!stopping.get()) {
+      stopping.set(true)
+      writeRunner.stop(success)
+    } else {
+      None
+    }
+  }
+
+  override def getPartitionLengths(): Array[Long] = throw new UnsupportedOperationException(
+    "Celeborn is not compatible with push-based shuffle, " +
+      "please set spark.shuffle.push.enabled to false")
+
+}
+
+object GpuCelebornShuffleWriter {
+  private[celeborn] val DEFAULT_INITIAL_SER_BUFFER_SIZE: Int = 1024 * 1024
+
+  private[celeborn] val METRIC_INSERT_RECORD_TIME = "celeborn.insertRecordTime"
+  private[celeborn] val METRIC_ACCU_BUFFER_TIME = "celeborn.accumulateBufferTime"
+  private[celeborn] val METRIC_DO_PUSH_TIME = "celeborn.doPushTime"
+  private[celeborn] val METRIC_DO_WRITE_TIME = "celeborn.doWriteTime"
+  private[celeborn] val METRIC_CLOSE_TIME = "celeborn.closeTime"
+  private[celeborn] val METRIC_STOP_TIME = "celeborn.stopTime"
+  private[celeborn] val METRIC_PUSH_GIANT_RECORD_TIME = "celeborn.pushGiantRecordTime"
+
+  private[celeborn] lazy val writerExecutorService: ExecutorService = Executors.newCachedThreadPool(
+    new ThreadFactoryBuilder()
+      .setDaemon(false)
+      .setNameFormat("gpu-celeborn-writer-%d")
+      .build())
+
+  def createMetrics(sc: SparkContext): Map[String, GpuMetric] = {
+    Map(
+      METRIC_INSERT_RECORD_TIME -> createNanoTimingMetric(sc, "celeborn insert record time"),
+      METRIC_ACCU_BUFFER_TIME -> createNanoTimingMetric(sc,
+        "celeborn accumulating buffer time "),
+      METRIC_PUSH_GIANT_RECORD_TIME -> createNanoTimingMetric(sc,
+        "celeborn push giant record time"),
+      METRIC_DO_WRITE_TIME -> createNanoTimingMetric(sc, "celeborn do write time"),
+      METRIC_DO_PUSH_TIME -> createNanoTimingMetric(sc, "celeborn do push time"),
+      METRIC_CLOSE_TIME -> createNanoTimingMetric(sc, "celeborn close time"),
+      METRIC_STOP_TIME -> createNanoTimingMetric(sc, "celeborn stop time")
+    )
+  }
+}
+
+class WriterRunner[K, V](
+    dep: GpuShuffleDependency[K, V, V],
+    taskContext: TaskContext,
+    val conf: CelebornConf,
+    val numMappers: Int,
+    val shuffleClient: ShuffleClient,
+    val metricsReporter: ShuffleWriteMetricsReporter,
+    val sendBufferPool: SendBufferPool,
+    val data: BlockingQueue[(Int, ColumnarBatch)],
+) extends Runnable with Logging {
   private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
   private val serOutputStream = dep.serializer.newInstance().serializeStream(serBuffer)
+
   private val mapId = taskContext.partitionId()
 
   private val numPartitions = dep.partitioner.numPartitions
@@ -49,7 +159,6 @@ class GpuCelebornShuffleWriter[K, V](
 
   private var tmpRecordsWritten = 0L
   private var peakMemoryUsedBytes = 0L
-  private val stopping: AtomicBoolean = new AtomicBoolean(false)
 
   private val extraMetrics = dep.metrics
   private val accuBufferTime: GpuMetric = extraMetrics(METRIC_ACCU_BUFFER_TIME)
@@ -59,57 +168,66 @@ class GpuCelebornShuffleWriter[K, V](
   private val closeTime: GpuMetric = extraMetrics(METRIC_CLOSE_TIME)
   private val stopTime: GpuMetric = extraMetrics(METRIC_STOP_TIME)
 
-  override def write(records: Iterator[Product2[K, V]]): Unit = {
-    val start = System.nanoTime()
+  override def run(): Unit = {
     doWriteTime.ns {
-      doWrite(records)
+      doWrite()
     }
-    GpuMetric.ns(closeTime) {
+    closeTime.ns {
       close()
     }
-    metricsReporter.incWriteTime(System.nanoTime() - start)
   }
 
+  private def doWrite(): Unit = {
+    var done = false
+    while (!done) {
+      val r = data.poll(1, TimeUnit.SECONDS)
 
-  private def doWrite(records: Iterator[Product2[K, V]]): Unit = {
-    for (r <- records) {
-      val partitionId = r._1.asInstanceOf[Int]
-      val batch = r._2.asInstanceOf[ColumnarBatch]
-      serBuffer.reset()
-      serOutputStream.writeKey(partitionId)
-      serOutputStream.writeValue(batch)
-      serOutputStream.flush()
-
-
-      val serializedRecordSize = serBuffer.size()
-
-      if (serializedRecordSize > pushBufferMaxSize) {
-        GpuMetric.ns(pushGiantRecordTime) {
-          pushGiantRecord(partitionId, serBuffer.getBuf, serializedRecordSize)
-        }
+      val partitionId = r._1
+      val batch = r._2
+      if (batch == null) {
+        done = true
       } else {
-        var success = GpuMetric.ns(accuBufferTime) {
+        writeOneBatch(partitionId, batch)
+      }
+    }
+  }
+
+  private def writeOneBatch(partitionId: Int, batch: ColumnarBatch): Unit = {
+    serBuffer.reset()
+    serOutputStream.writeKey(partitionId)
+    serOutputStream.writeValue(batch)
+    serOutputStream.flush()
+
+
+    val serializedRecordSize = serBuffer.size()
+
+    if (serializedRecordSize > pushBufferMaxSize) {
+      GpuMetric.ns(pushGiantRecordTime) {
+        pushGiantRecord(partitionId, serBuffer.getBuf, serializedRecordSize)
+      }
+    } else {
+      var success = GpuMetric.ns(accuBufferTime) {
+        pusher.insertRecord(serBuffer.getBuf,
+          Platform.BYTE_ARRAY_OFFSET,
+          serializedRecordSize, partitionId, false)
+      }
+      if (!success) {
+        doPush()
+        success = GpuMetric.ns(accuBufferTime) {
           pusher.insertRecord(serBuffer.getBuf,
             Platform.BYTE_ARRAY_OFFSET,
             serializedRecordSize, partitionId, false)
         }
-        if (!success) {
-          doPush()
-          success = GpuMetric.ns(accuBufferTime) {
-            pusher.insertRecord(serBuffer.getBuf,
-              Platform.BYTE_ARRAY_OFFSET,
-              serializedRecordSize, partitionId, false)
-          }
 
-          if (!success) {
-            throw new IOException("Unable to push after switching pusher!")
-          }
+        if (!success) {
+          throw new IOException("Unable to push after switching pusher!")
         }
       }
-
-      tmpRecordsWritten += 1
     }
+
+    tmpRecordsWritten += 1
   }
+
 
   private def pushGiantRecord(partitionId: Int, buffer: Array[Byte], numBytes: Int): Unit = {
     logDebug(s"Pushing giant record of size $numBytes to partition $partitionId")
@@ -143,38 +261,6 @@ class GpuCelebornShuffleWriter[K, V](
     shuffleClient.mapperEnd(dep.shuffleId, mapId, taskContext.attemptNumber(), numMappers)
   }
 
-  override def stop(success: Boolean): Option[MapStatus] = {
-    GpuMetric.ns(stopTime) {
-      try {
-        taskContext.taskMetrics().incPeakExecutionMemory(getPeakMemoryUsed)
-        if (!stopping.get()) {
-          stopping.set(true)
-          if (success) {
-            val bmId = SparkEnv.get.blockManager.shuffleServerId
-            val mapStatus = SparkUtils.createMapStatus(bmId,
-              SparkUtils.unwrap(mapStatusLengths), taskContext.taskAttemptId())
-
-            if (mapStatus != null) {
-              Some(mapStatus)
-            } else {
-              throw new IllegalStateException(
-                "Cannot call stop(true) without having called write()")
-            }
-          } else {
-            None
-          }
-        } else {
-          None
-        }
-      } finally {
-        shuffleClient.cleanup(dep.shuffleId, mapId, taskContext.attemptNumber())
-      }
-    }
-  }
-
-  override def getPartitionLengths(): Array[Long] = throw new UnsupportedOperationException(
-    "Celeborn is not compatible with push-based shuffle, " +
-      "please set spark.shuffle.push.enabled to false")
 
   private def updatePeakMemoryUsed(): Unit = {
     val memoryUsed = pusher.getUsed
@@ -187,28 +273,28 @@ class GpuCelebornShuffleWriter[K, V](
     updatePeakMemoryUsed()
     peakMemoryUsedBytes
   }
-}
 
-object GpuCelebornShuffleWriter {
-  private val DEFAULT_INITIAL_SER_BUFFER_SIZE: Int = 1024 * 1024
+  def stop(success: Boolean): Option[MapStatus] = {
+    GpuMetric.ns(stopTime) {
+      try {
+        if (success) {
+          val bmId = SparkEnv.get.blockManager.shuffleServerId
+          val mapStatus = SparkUtils.createMapStatus(bmId,
+            SparkUtils.unwrap(mapStatusLengths), taskContext.taskAttemptId())
 
-  private val METRIC_ACCU_BUFFER_TIME = "accumulateBufferTime"
-  private val METRIC_DO_PUSH_TIME = "celeborn.doPushTime"
-  private val METRIC_DO_WRITE_TIME = "celeborn.doWriteTime"
-  private val METRIC_CLOSE_TIME = "celeborn.closeTime"
-  private val METRIC_STOP_TIME = "celeborn.stopTime"
-  private val METRIC_PUSH_GIANT_RECORD_TIME = "celeborn.pushGiantRecordTime"
-
-  def createMetrics(sc: SparkContext): Map[String, GpuMetric] = {
-    Map(
-      METRIC_ACCU_BUFFER_TIME -> createNanoTimingMetric(sc,
-        "celeborn accumulating buffer time "),
-      METRIC_PUSH_GIANT_RECORD_TIME -> createNanoTimingMetric(sc,
-        "celeborn push giant record time"),
-      METRIC_DO_WRITE_TIME -> createNanoTimingMetric(sc, "celeborn do write time"),
-      METRIC_DO_PUSH_TIME -> createNanoTimingMetric(sc, "celeborn do push time"),
-      METRIC_CLOSE_TIME -> createNanoTimingMetric(sc, "celeborn close time"),
-      METRIC_STOP_TIME -> createNanoTimingMetric(sc, "celeborn stop time")
-    )
+          if (mapStatus != null) {
+            Some(mapStatus)
+          } else {
+            throw new IllegalStateException(
+              "Cannot call stop(true) without having called write()")
+          }
+        } else {
+          None
+        }
+      } finally {
+        shuffleClient.cleanup(dep.shuffleId, mapId, taskContext.attemptNumber())
+      }
+    }
   }
 }
+
