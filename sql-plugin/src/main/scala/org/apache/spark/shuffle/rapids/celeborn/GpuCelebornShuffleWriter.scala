@@ -1,17 +1,17 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
 import java.io.IOException
-import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference, LongAdder}
 import java.util.concurrent.{ArrayBlockingQueue, BlockingQueue, Executors, ExecutorService, Future, TimeUnit}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference, LongAdder}
 
 import scala.annotation.tailrec
 
-import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
 import com.nvidia.spark.rapids.{GpuMetric, ThreadFactoryBuilder}
+import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.common.CelebornConf
-import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
 
+import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
@@ -61,6 +61,8 @@ class GpuCelebornShuffleWriter[K, V](
       insertRecordTime.ns {
         tryInsertRecord(-1, null, f)
       }
+      // Wait for task to finish
+      f.get()
     } finally {
       f.cancel(true)
     }
