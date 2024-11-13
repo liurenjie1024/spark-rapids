@@ -1,7 +1,7 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
 import java.io.IOException
-import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference, LongAdder}
 import java.util.concurrent.{ArrayBlockingQueue, BlockingQueue, Executors, ExecutorService, Future, TimeUnit}
 
 import scala.annotation.tailrec
@@ -32,6 +32,7 @@ class GpuCelebornShuffleWriter[K, V](
     val sendBufferPool: SendBufferPool,
 ) extends ShuffleWriter[K, V] with Logging {
   private val buffer = new ArrayBlockingQueue[(Int, ColumnarBatch)](10)
+  private val runnerHolder = new AtomicReference[WriterRunner[K, V]]()
   // Used by spark
   private val stopping: AtomicBoolean = new AtomicBoolean(false)
 
@@ -41,8 +42,10 @@ class GpuCelebornShuffleWriter[K, V](
     val start = System.nanoTime()
     val f = writerExecutorService.submit(new Runnable {
       override def run(): Unit = {
-        new WriterRunner(dep, taskContext, conf, numMappers, shuffleClient,
-          metricsReporter, sendBufferPool, buffer).run()
+        val runner =  new WriterRunner(dep, taskContext, conf, numMappers, shuffleClient,
+          metricsReporter, sendBufferPool, buffer)
+        runnerHolder.set(runner)
+        runner.run()
       }
     })
     try {
@@ -82,10 +85,10 @@ class GpuCelebornShuffleWriter[K, V](
 
 
   override def stop(success: Boolean): Option[MapStatus] = {
-    taskContext.taskMetrics().incPeakExecutionMemory(writeRunner.getPeakMemoryUsed)
+    taskContext.taskMetrics().incPeakExecutionMemory(runnerHolder.get().getPeakMemoryUsed)
     if (!stopping.get()) {
       stopping.set(true)
-      writeRunner.stop(success)
+      runnerHolder.get().stop(success)
     } else {
       None
     }
