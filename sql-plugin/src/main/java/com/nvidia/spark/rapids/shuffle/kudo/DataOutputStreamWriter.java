@@ -9,8 +9,7 @@ import java.io.IOException;
  * Visible for testing
  */
 class DataOutputStreamWriter extends DataWriter {
-    private static final  ThreadLocal<byte[]>  arrayBuffer =
-        ThreadLocal.withInitial(() -> new byte[2 * 1024]);
+    private final byte[] arrayBuffer = new byte[1024];
     private final DataOutputStream dout;
 
     public DataOutputStreamWriter(DataOutputStream dout) {
@@ -46,12 +45,11 @@ class DataOutputStreamWriter extends DataWriter {
 
     @Override
     public void copyDataFrom(HostMemoryBuffer src, long srcOffset, long len) throws IOException {
-        byte[] tmpBuf = arrayBuffer.get();
         long dataLeft = len;
         while (dataLeft > 0) {
-            int amountToCopy = (int)Math.min(tmpBuf.length, dataLeft);
-            src.getBytes(tmpBuf, 0, srcOffset, amountToCopy);
-            dout.write(tmpBuf, 0, amountToCopy);
+            int amountToCopy = (int)Math.min(arrayBuffer.length, dataLeft);
+            src.getBytes(arrayBuffer, 0, srcOffset, amountToCopy);
+            dout.write(arrayBuffer, 0, amountToCopy);
             srcOffset += amountToCopy;
             dataLeft -= amountToCopy;
         }
