@@ -10,7 +10,7 @@ import java.io.IOException;
  */
 class DataOutputStreamWriter extends DataWriter {
     private static final  ThreadLocal<byte[]>  arrayBuffer =
-        ThreadLocal.withInitial(() -> new byte[4 * 1024]);
+        ThreadLocal.withInitial(() -> new byte[2 * 1024]);
     private final DataOutputStream dout;
 
     public DataOutputStreamWriter(DataOutputStream dout) {

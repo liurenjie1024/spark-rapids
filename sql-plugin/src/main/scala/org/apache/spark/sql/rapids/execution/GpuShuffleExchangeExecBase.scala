@@ -224,11 +224,8 @@ abstract class GpuShuffleExchangeExecBase(
     "kudoTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo total time"),
     "kudoCalcHeaderTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo calc header time"),
     "kudoCopyHeaderTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo copy header time"),
-    "kudoCopyValidityBufferTime" ->
-      createNanoTimingMetric(DEBUG_LEVEL, "kudo copy validity buffer time"),
-    "kudoCopyOffsetBufferTime" ->
-      createNanoTimingMetric(DEBUG_LEVEL, "kudo copy offset buffer time"),
-    "kudoCopyDataBufferTime" -> createNanoTimingMetric(DEBUG_LEVEL, "kudo copy data buffer time"),
+    "kudoCopyBufferTime" ->
+      createNanoTimingMetric(DEBUG_LEVEL, "kudo copy buffer time"),
   ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics) ++
     GpuCelebornShuffleWriter.createMetrics(sparkContext)
 

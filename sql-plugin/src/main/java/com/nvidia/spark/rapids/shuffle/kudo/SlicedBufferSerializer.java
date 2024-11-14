@@ -141,7 +141,7 @@ class SlicedBufferSerializer implements HostColumnsVisitor<Void> {
         } catch (Exception e) {
           throw new RuntimeException(e);
         }
-      }, metrics::addCopyValidityBufferTime);
+      }, metrics::addCopyBufferTime);
     } else {
       return 0;
     }
@@ -162,7 +162,7 @@ class SlicedBufferSerializer implements HostColumnsVisitor<Void> {
       } catch (Exception e) {
         throw new RuntimeException(e);
       }
-    }, metrics::addCopyOffsetBufferTime);
+    }, metrics::addCopyBufferTime);
   }
 
   private long copySlicedData(HostColumnVectorCore column, SliceInfo sliceInfo) throws IOException {
@@ -187,7 +187,7 @@ class SlicedBufferSerializer implements HostColumnsVisitor<Void> {
             } catch (Exception e) {
               throw new RuntimeException(e);
             }
-          }, metrics::addCopyDataBufferTime);
+          }, metrics::addCopyBufferTime);
         }
       } else if (type.getSizeInBytes() > 0) {
         long bytesToCopy = sliceInfo.rowCount * type.getSizeInBytes();
@@ -200,7 +200,7 @@ class SlicedBufferSerializer implements HostColumnsVisitor<Void> {
           } catch (Exception e) {
             throw new RuntimeException(e);
           }
-        }, metrics::addCopyDataBufferTime);
+        }, metrics::addCopyBufferTime);
       } else {
         return 0;
       }

@@ -208,9 +208,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
   private val kudoTime: GpuMetric = metrics("kudoTime")
   private val kudoCalcHeaderTime: GpuMetric = metrics("kudoCalcHeaderTime")
   private val kudoCopyHeaderTime: GpuMetric = metrics("kudoCopyHeaderTime")
-  private val kudoCopyValidityBufferTime: GpuMetric = metrics("kudoCopyValidityBufferTime")
-  private val kudoCopyOffsetsBufferTime: GpuMetric = metrics("kudoCopyOffsetBufferTime")
-  private val kudoCopyDataBufferTime: GpuMetric = metrics("kudoCopyDataBufferTime")
+  private val kudoCopyBufferTime: GpuMetric = metrics("kudoCopyBufferTime")
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
     private[this] val dOut: DataOutputStream =
@@ -294,9 +292,7 @@ private class GpuColumnarBatchSerializerInstance(dataSize: GpuMetric, kudoOpt: O
                 dataSize += result.getLeft
                 kudoCalcHeaderTime += result.getRight.getCalcHeaderTime
                 kudoCopyHeaderTime += result.getRight.getCopyHeaderTime
-                kudoCopyValidityBufferTime += result.getRight.getCopyValidityBufferTime
-                kudoCopyOffsetsBufferTime += result.getRight.getCopyOffsetBufferTime
-                kudoCopyDataBufferTime += result.getRight.getCopyDataBufferTime
+                kudoCopyBufferTime += result.getRight.getCopyBufferTime
               } catch {
                 case e: Throwable =>
 //                  val sb = new StringBuilder(1024)
