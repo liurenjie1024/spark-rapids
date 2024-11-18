@@ -26,10 +26,10 @@ import scala.concurrent.Future
 import scala.concurrent.duration.Duration
 
 import com.databricks.sql.transaction.tahoe.sources.DeltaSQLConf
-import com.nvidia.spark.rapids.{GpuColumnarBatchSerializer, GpuExec, GpuMetric, GpuPartitioning, GpuRoundRobinPartitioning}
+import com.nvidia.spark.rapids.{GpuColumnarBatchSerializer, GpuColumnVector, GpuExec, GpuMetric, GpuPartitioning, GpuRoundRobinPartitioning, RapidsConf}
 import com.nvidia.spark.rapids.delta.RapidsDeltaSQLConf
-
 import org.apache.spark.{MapOutputStatistics, ShuffleDependency}
+
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
@@ -98,7 +98,9 @@ case class GpuOptimizeWriteExchangeExec(
   }
 
   private lazy val serializer: Serializer =
-    new GpuColumnarBatchSerializer(gpuLongMetric("dataSize"))
+    new GpuColumnarBatchSerializer(gpuLongMetric("dataSize"),
+      child.output.map(_.dataType).toArray,
+      RapidsConf.SHUFFLE_KUDO_SERIALIZER_ENABLED.get(child.conf))
 
   @transient lazy val inputRDD: RDD[ColumnarBatch] = child.executeColumnar()
 
