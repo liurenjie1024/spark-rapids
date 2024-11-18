@@ -143,7 +143,7 @@ object GpuShuffleCoalesceUtils {
   def getSerializedBufferSize(cb: ColumnarBatch): Long = {
     assert(cb.numCols() == 1)
     val hmb = cb.column(0) match {
-      // TODO add the Kudo case
+      case col: KudoSerializedTableColumn => col.kudoTable.getBuffer
       case serCol: SerializedTableColumn => serCol.hostBuffer
       case o => throw new IllegalStateException(s"unsupported type: ${o.getClass}")
     }
