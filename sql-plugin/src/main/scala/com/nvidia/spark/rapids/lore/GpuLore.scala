@@ -279,6 +279,7 @@ object GpuLore {
       sparkPlan
     }
 
+    println(s"newPlan: \n ${newPlan.verboseStringWithOperatorId()}")
     newPlan
   }
 
