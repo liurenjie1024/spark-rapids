@@ -500,7 +500,7 @@ class AdaptiveQueryExecSuite
     val conf = new SparkConf()
       .set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "true")
       .set(SQLConf.LOCAL_SHUFFLE_READER_ENABLED.key, "true")
-      .set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "400")
+      .set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "200")
       .set(SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key, "50")
       // disable DemoteBroadcastHashJoin rule from removing BHJ due to empty partitions
       .set(SQLConf.NON_EMPTY_PARTITION_RATIO_FOR_BROADCAST_JOIN.key, "0")
@@ -518,7 +518,7 @@ class AdaptiveQueryExecSuite
       val smj = findTopLevelSortMergeJoin(plan)
       assert(smj.size == 2)
       val bhj = findTopLevelGpuBroadcastHashJoin(adaptivePlan)
-      assert(bhj.size == 2)
+      assert(bhj.size == 1)
       // There is still a SMJ, and its two shuffles can't apply local reader.
       checkNumLocalShuffleReaders(adaptivePlan, 2)
     }, conf)
