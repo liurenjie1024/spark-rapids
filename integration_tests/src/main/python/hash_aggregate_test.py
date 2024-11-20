@@ -826,7 +826,7 @@ def test_hash_reduction_collect_set_on_nested_array_type(data_gen, kudo_enabled)
 @pytest.mark.parametrize('data_gen', _full_gen_data_for_collect_op, ids=idfn)
 @pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
 @allow_non_gpu(*non_utc_allow)
-def test_hash_groupby_collect_with_single_distinct(data_gen, conf):
+def test_hash_groupby_collect_with_single_distinct(data_gen, kudo_enabled):
     # test collect_ops with other distinct aggregations
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: gen_df(spark, data_gen, length=100)
