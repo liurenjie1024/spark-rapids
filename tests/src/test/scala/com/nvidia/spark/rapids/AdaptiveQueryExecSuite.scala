@@ -518,7 +518,7 @@ class AdaptiveQueryExecSuite
       val smj = findTopLevelSortMergeJoin(plan)
       assert(smj.size == 2)
       val bhj = findTopLevelGpuBroadcastHashJoin(adaptivePlan)
-      assert(bhj.size == 1)
+      assert(bhj.size == 2)
       // There is still a SMJ, and its two shuffles can't apply local reader.
       checkNumLocalShuffleReaders(adaptivePlan, 2)
     }, conf)
