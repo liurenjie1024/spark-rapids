@@ -204,6 +204,8 @@ _decimal_gen_36_5 = DecimalGen(precision=36, scale=5)
 _decimal_gen_36_neg5 = DecimalGen(precision=36, scale=-5)
 _decimal_gen_38_10 = DecimalGen(precision=38, scale=10)
 
+kudo_enabled_conf_key = "spark.rapids.shuffle.kudo.serializer.enabled"
+
 
 def get_params(init_list, marked_params=[]):
     """
@@ -307,7 +309,8 @@ _init_list_with_decimalbig = _init_list + [
 @nightly_gpu_mem_consuming_case
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
 @pytest.mark.parametrize('precision', [38, 37, 36, 35, 34, 33, 32, 31], ids=idfn)
-def test_hash_reduction_decimal_overflow_sum(precision):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_reduction_decimal_overflow_sum(precision, kudo_enabled):
     constant = '9' * precision
     count = pow(10, 38 - precision)
     assert_gpu_and_cpu_are_equal_collect(
@@ -318,16 +321,20 @@ def test_hash_reduction_decimal_overflow_sum(precision):
         # run out of memory in some setups. These should not happen in production, because
         # we really are just doing a really bad job at multiplying to get this result so
         # some optimizations are conspiring against us.
-        conf = {'spark.rapids.sql.batchSizeBytes': '128m'})
+        conf = {'spark.rapids.sql.batchSizeBytes': '128m',
+                kudo_enabled_conf_key: kudo_enabled})
 
 
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
 @pytest.mark.parametrize('data_gen', [_longs_with_nulls], ids=idfn)
 @pytest.mark.parametrize('override_split_until_size', [None, 1], ids=idfn)
 @pytest.mark.parametrize('override_batch_size_bytes', [None, 1], ids=idfn)
-def test_hash_grpby_sum_count_action(data_gen, override_split_until_size, override_batch_size_bytes):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_grpby_sum_count_action(data_gen, override_split_until_size,
+                                     override_batch_size_bytes, kudo_enabled):
     conf = {
-        'spark.rapids.sql.test.overrides.splitUntilSize': override_split_until_size
+        'spark.rapids.sql.test.overrides.splitUntilSize': override_split_until_size,
+        kudo_enabled_conf_key: kudo_enabled
     }
     if override_batch_size_bytes is not None:
         conf["spark.rapids.sql.batchSizeBytes"] = override_batch_size_bytes
@@ -340,23 +347,29 @@ def test_hash_grpby_sum_count_action(data_gen, override_split_until_size, overri
 @allow_non_gpu("SortAggregateExec", "SortExec", "ShuffleExchangeExec")
 @ignore_order
 @pytest.mark.parametrize('data_gen', _grpkey_nested_structs_with_array_basic_child + _grpkey_list_with_non_nested_children, ids=idfn)
-def test_hash_grpby_list_min_max(data_gen):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_grpby_list_min_max(data_gen, kudo_enabled):
     assert_gpu_and_cpu_are_equal_collect(
-        lambda spark: gen_df(spark, data_gen, length=100).coalesce(1).groupby('a').agg(f.min('b'), f.max('b'))
-    )
+        lambda spark: gen_df(spark, data_gen, length=100).coalesce(1).groupby('a').agg(f.min(
+            'b'), f.max('b')),
+        conf = {kudo_enabled_conf_key: kudo_enabled})
 
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
 @pytest.mark.parametrize('data_gen', [_longs_with_nulls], ids=idfn)
-def test_hash_reduction_sum_count_action(data_gen):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_reduction_sum_count_action(data_gen, kudo_enabled):
     assert_gpu_and_cpu_row_counts_equal(
-        lambda spark: gen_df(spark, data_gen, length=100).agg(f.sum('b'))
+        lambda spark: gen_df(spark, data_gen, length=100).agg(f.sum('b')),
+        conf = {kudo_enabled_conf_key: kudo_enabled}
     )
 
 # Make sure that we can do computation in the group by columns
 @ignore_order
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
-def test_computation_in_grpby_columns():
-    conf = {'spark.rapids.sql.batchSizeBytes' : '250'}
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_computation_in_grpby_columns(kudo_enabled):
+    conf = {'spark.rapids.sql.batchSizeBytes' : '250',
+            kudo_enabled_conf_key: kudo_enabled}
     data_gen = [
             ('a', RepeatSeqGen(StringGen('a{1,20}'), length=50)),
             ('b', short_gen)]
@@ -371,10 +384,12 @@ def test_computation_in_grpby_columns():
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
 @pytest.mark.parametrize('data_gen', _init_list_with_decimalbig, ids=idfn)
 @pytest.mark.parametrize('conf', get_params(_confs, params_markers_for_confs), ids=idfn)
-def test_hash_grpby_sum(data_gen, conf):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_grpby_sum(data_gen, conf, kudo_enabled):
+    new_conf = copy_and_update(conf, {kudo_enabled_conf_key: kudo_enabled})
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: gen_df(spark, data_gen, length=100).groupby('a').agg(f.sum('b')),
-        conf = conf)
+        conf = new_conf)
 
 @shuffle_test
 @approximate_float
@@ -383,10 +398,12 @@ def test_hash_grpby_sum(data_gen, conf):
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
 @pytest.mark.parametrize('data_gen', [_grpkey_short_sum_full_decimals, _grpkey_short_sum_full_neg_scale_decimals], ids=idfn)
 @pytest.mark.parametrize('conf', get_params(_confs, params_markers_for_confs), ids=idfn)
-def test_hash_grpby_sum_full_decimal(data_gen, conf):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_grpby_sum_full_decimal(data_gen, conf, kudo_enabled):
+    new_conf = copy_and_update(conf, {kudo_enabled_conf_key: kudo_enabled})
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: gen_df(spark, data_gen, length=100).groupby('a').agg(f.sum('b')),
-        conf = conf)
+        conf = new_conf)
 
 @approximate_float
 @datagen_overrides(seed=0, reason="https://github.com/NVIDIA/spark-rapids/issues/9822")
@@ -394,10 +411,12 @@ def test_hash_grpby_sum_full_decimal(data_gen, conf):
 @incompat
 @pytest.mark.parametrize('data_gen', numeric_gens + decimal_gens + [DecimalGen(precision=36, scale=5)], ids=idfn)
 @pytest.mark.parametrize('conf', get_params(_confs, params_markers_for_confs), ids=idfn)
-def test_hash_reduction_sum(data_gen, conf):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_reduction_sum(data_gen, conf, kudo_enabled):
+    new_conf = copy_and_update(conf, {kudo_enabled_conf_key: kudo_enabled})
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: unary_op_df(spark, data_gen, length=100).selectExpr("SUM(a)"),
-        conf = conf)
+        conf = new_conf)
 
 @approximate_float
 @ignore_order
@@ -406,11 +425,13 @@ def test_hash_reduction_sum(data_gen, conf):
 @pytest.mark.parametrize('data_gen', numeric_gens + decimal_gens + [
     DecimalGen(precision=38, scale=0), DecimalGen(precision=38, scale=-10)], ids=idfn)
 @pytest.mark.parametrize('conf', get_params(_confs, params_markers_for_confs), ids=idfn)
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
 @datagen_overrides(seed=0, permanent=True, reason='https://github.com/NVIDIA/spark-rapids/issues/9779')
-def test_hash_reduction_sum_full_decimal(data_gen, conf):
+def test_hash_reduction_sum_full_decimal(data_gen, conf, kudo_enabled):
+    new_conf = copy_and_update(conf, {kudo_enabled_conf_key: kudo_enabled})
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: unary_op_df(spark, data_gen, length=100).selectExpr("SUM(a)"),
-        conf = conf)
+        conf = new_conf)
 
 @approximate_float
 @ignore_order
@@ -419,10 +440,12 @@ def test_hash_reduction_sum_full_decimal(data_gen, conf):
 @pytest.mark.parametrize('data_gen', _init_list + [_grpkey_short_mid_decimals,
     _grpkey_short_big_decimals, _grpkey_short_very_big_decimals, _grpkey_short_sum_full_decimals], ids=idfn)
 @pytest.mark.parametrize('conf', get_params(_confs, params_markers_for_confs), ids=idfn)
-def test_hash_grpby_avg(data_gen, conf):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_hash_grpby_avg(data_gen, conf, kudo_enabled):
+    new_conf = copy_and_update(conf, {kudo_enabled_conf_key: kudo_enabled})
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: gen_df(spark, data_gen, length=200).groupby('a').agg(f.avg('b')),
-        conf=conf
+        conf=new_conf
     )
 
 # tracks https://github.com/NVIDIA/spark-rapids/issues/154
@@ -438,21 +461,25 @@ def test_hash_grpby_avg(data_gen, conf):
 @pytest.mark.parametrize('data_gen', [
     StructGen(children=[('a', int_gen), ('b', int_gen)],nullable=False,
         special_cases=[((None, None), 400.0), ((None, -1542301795), 100.0)])], ids=idfn)
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
 @pytest.mark.xfail(condition=is_databricks104_or_later(), reason='https://github.com/NVIDIA/spark-rapids/issues/4963')
-def test_hash_avg_nulls_partial_only(data_gen):
+def test_hash_avg_nulls_partial_only(data_gen, kudo_enabled):
+    conf = copy_and_update(_float_conf_partial, {kudo_enabled_conf_key: kudo_enabled})
     assert_gpu_and_cpu_are_equal_collect(
         lambda spark: gen_df(spark, data_gen, length=2).agg(f.avg('b')),
-        conf=_float_conf_partial
-    )
+        conf=conf)
 
 @approximate_float
 @ignore_order
 @incompat
 @disable_ansi_mode  # https://github.com/NVIDIA/spark-rapids/issues/5114
 @pytest.mark.parametrize('data_gen', _init_list_with_decimalbig, ids=idfn)
-def test_intersect_all(data_gen):
+@pytest.mark.parametrize("kudo_enabled", ["true", "false"], ids=idfn)
+def test_intersect_all(data_gen, kudo_enabled):
     assert_gpu_and_cpu_are_equal_collect(
-        lambda spark : gen_df(spark, data_gen, length=100).intersectAll(gen_df(spark, data_gen, length=100)))
+        lambda spark : gen_df(spark, data_gen, length=100).intersectAll(gen_df(spark, data_gen,
+                                                                               length=100)),
+        conf = {kudo_enabled_conf_key: kudo_enabled})
 
 @approximate_float
 @ignore_order
