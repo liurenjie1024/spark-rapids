@@ -377,8 +377,6 @@ private class KudoSerializerInstance(
             Cuda.DEFAULT_STREAM.sync()
           }
 
-
-          throw new UnsupportedOperationException("KudoSerializer does not support async copy")
           withResource(new NvtxRange("Serialize Batch", NvtxColor.YELLOW)) { _ =>
             dataSize += kudo.writeToStream(columns, dOut, startRow, numRows)
           }
