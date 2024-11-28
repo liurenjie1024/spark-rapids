@@ -973,6 +973,12 @@
                 <scope>compile</scope>
             </dependency>
             <dependency>
+                <groupId>com.github.luben</groupId>
+                <artifactId>zstd-jni</artifactId>
+                <version>1.5.0-4</version>
+                <scope>provided</scope>
+            </dependency>
+            <dependency>
                 <!-- For shade, spark 3.2 and earlier uses an older version(0.9.0), which doesn't
                  contain the required api we use.
                  -->

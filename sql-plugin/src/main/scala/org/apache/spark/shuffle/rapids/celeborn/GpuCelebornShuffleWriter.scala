@@ -1,20 +1,27 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
-import java.io.IOException
+import java.io.{BufferedOutputStream, IOException, OutputStream}
+
+import java.util
 import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
 
+import com.github.luben.zstd.{NoPool, RecyclingBufferPool, ZstdOutputStreamNoFinalizer}
 import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
 import com.nvidia.spark.rapids.GpuMetric
+import com.nvidia.spark.rapids.shuffle.{HostColumnarBatchPartition, PartitionedHostColumnarBatch}
 import org.apache.celeborn.client.ShuffleClient
+import org.apache.celeborn.client.write.DataPusher
 import org.apache.celeborn.common.CelebornConf
-
 import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
+import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SortBasedPusher, SparkUtils}
 import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_ACCU_BUFFER_TIME, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_PUSH_GIANT_RECORD_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 
@@ -195,7 +202,7 @@ class GpuCelebornShuffleWriter[K, V](
 }
 
 object GpuCelebornShuffleWriter {
-  private val DEFAULT_INITIAL_SER_BUFFER_SIZE: Int = 1024 * 1024
+  private[celeborn] val DEFAULT_INITIAL_SER_BUFFER_SIZE: Int = 1024 * 1024
 
   private val METRIC_ACCU_BUFFER_TIME = "accumulateBufferTime"
   private val METRIC_DO_PUSH_TIME = "celeborn.doPushTime"
@@ -215,5 +222,57 @@ object GpuCelebornShuffleWriter {
       METRIC_CLOSE_TIME -> createNanoTimingMetric(sc, "celeborn close time"),
       METRIC_STOP_TIME -> createNanoTimingMetric(sc, "celeborn stop time")
     )
+  }
+}
+
+class GpuDataPusher(val maxBufferSize: Long,
+    val zstdCompressionLevel: Int,
+    val zstdUseBufferPool: Boolean,
+    val zstdWorkers: Int,
+    val zstdBufferSize: Int,
+    val numPartitions: Int,
+    val dataPusher: DataPusher,
+    val serializerInst: SerializerInstance,
+) {
+  private val memoryBuf = new util.ArrayList[PartitionedHostColumnarBatch]()
+  private var accumulatedBufferSize = 0L
+  private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
+
+  def insert(partitionedTable: PartitionedHostColumnarBatch) = {
+    if (accumulatedBufferSize + partitionedTable.memorySize >= maxBufferSize) {
+      push()
+    } else {
+      memoryBuf.add(partitionedTable)
+      accumulatedBufferSize += partitionedTable.memorySize
+    }
+  }
+
+  private def push() = {
+
+  }
+
+  private def pushOnePartition(partitionId: Int,
+      partitions: Iterator[HostColumnarBatchPartition]) = {
+    serBuffer.reset()
+    val serStream = serializerInst.serializeStream(createZstdOutputStream)
+    serStream.writeKey(partitionId)
+    for (partition <- partitions) {
+      serStream.writeValue(partition)
+    }
+    serStream.flush()
+  }
+
+  private def createZstdOutputStream: OutputStream = {
+    val bufferPool = if (zstdUseBufferPool) {
+      RecyclingBufferPool.INSTANCE
+    } else {
+      NoPool.INSTANCE
+    }
+
+    val zstd = new ZstdOutputStreamNoFinalizer(serBuffer, bufferPool)
+      .setLevel(zstdCompressionLevel)
+      .setWorkers(zstdWorkers)
+
+    new BufferedOutputStream(zstd, zstdBufferSize)
   }
 }
