@@ -128,8 +128,10 @@ class SerializedBatchIterator(dIn: DataInputStream)
 class GpuColumnarBatchSerializer(dataSize: GpuMetric, dataTypes: Array[DataType], useKudo: Boolean)
   extends Serializer with Serializable {
   override def newInstance(): SerializerInstance = {
+    val kudo = new KudoSerializer(GpuColumnVector.from(dataTypes))
+
     if (useKudo) {
-      new KudoSerializerInstance(dataSize, dataTypes)
+      new KudoSerializerInstance(dataSize, dataTypes, kudo)
     } else {
       new GpuColumnarBatchSerializerInstance(dataSize)
     }
@@ -328,9 +330,10 @@ object SerializedTableColumn {
  */
 private class KudoSerializerInstance(
     val dataSize: GpuMetric,
-    val dataTypes: Array[DataType]) extends SerializerInstance {
+    val dataTypes: Array[DataType],
+    val kudo: KudoSerializer,
+) extends SerializerInstance {
 
-  private lazy val kudo = new KudoSerializer(GpuColumnVector.from(dataTypes))
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
     private[this] val dOut: DataOutputStream =
@@ -356,15 +359,13 @@ private class KudoSerializerInstance(
             for (i <- 0 until numColumns) {
               batch.column(i) match {
                 case gpu: GpuColumnVector =>
-                  val cpu = gpu.copyToHostAsync(Cuda.DEFAULT_STREAM)
+                  val cpu = gpu.copyToHost
                   toClose += cpu
                   columns(i) = cpu.getBase
                 case cpu: RapidsHostColumnVector =>
                   columns(i) = cpu.getBase
               }
             }
-
-            Cuda.DEFAULT_STREAM.sync()
           }
 
           withResource(new NvtxRange("Serialize Batch", NvtxColor.YELLOW)) { _ =>
