@@ -129,7 +129,6 @@ class GpuColumnarBatchSerializer(dataSize: GpuMetric, dataTypes: Array[DataType]
   extends Serializer with Serializable {
   override def newInstance(): SerializerInstance = {
     val kudo = new KudoSerializer(GpuColumnVector.from(dataTypes))
-
     if (useKudo) {
       new KudoSerializerInstance(dataSize, dataTypes, kudo)
     } else {
