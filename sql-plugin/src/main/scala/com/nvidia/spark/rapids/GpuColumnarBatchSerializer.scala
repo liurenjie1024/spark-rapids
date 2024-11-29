@@ -127,9 +127,10 @@ class SerializedBatchIterator(dIn: DataInputStream)
  */
 class GpuColumnarBatchSerializer(dataSize: GpuMetric, dataTypes: Array[DataType], useKudo: Boolean)
   extends Serializer with Serializable {
+  private lazy val kudo = new KudoSerializer(GpuColumnVector.from(dataTypes))
   override def newInstance(): SerializerInstance = {
     if (useKudo) {
-      new KudoSerializerInstance(dataSize, dataTypes)
+      new KudoSerializerInstance(dataSize, dataTypes, kudo)
     } else {
       new GpuColumnarBatchSerializerInstance(dataSize)
     }
@@ -329,8 +330,8 @@ object SerializedTableColumn {
 private class KudoSerializerInstance(
     val dataSize: GpuMetric,
     val dataTypes: Array[DataType],
+    val kudo: KudoSerializer,
 ) extends SerializerInstance {
-  private lazy val kudo = new KudoSerializer(GpuColumnVector.from(dataTypes))
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
     private[this] val dOut: DataOutputStream =
