@@ -237,6 +237,9 @@ class KudoTableOperator(
     kudoMergeHeaderTime: GpuMetric,
     kudoMergeBufferTime: GpuMetric) extends SerializedTableOperator[KudoSerializedTableColumn] {
   require(kudo != null, "kudo serializer should not be null")
+  private val kudoTables = new util.ArrayList[KudoTable](kudo
+    .map(_.getFlattenedColumnCount)
+    .getOrElse(0))
 
   override def getDataLen(column: KudoSerializedTableColumn): Long = column.kudoTable.getHeader
     .getTotalDataLen
@@ -251,7 +254,7 @@ class KudoTableOperator(
       val totalRowsNum = columns.map(getNumRows).sum
       RowCountOnlyMergeResult(totalRowsNum)
     } else {
-      val kudoTables = new util.ArrayList[KudoTable](columns.length)
+      kudoTables.clear()
       columns.foreach { column =>
         kudoTables.add(column.kudoTable)
       }
