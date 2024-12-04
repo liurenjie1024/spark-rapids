@@ -39,6 +39,11 @@ case object GpuSinglePartitioning extends GpuExpression with ShimExpression
    * temporary value.
    */
   override def columnarEvalAny(batch: ColumnarBatch): Any = {
+    if (usesCelebornShuffle) {
+      throw new UnsupportedOperationException("Celeborn shuffle + single partition is not " +
+        "supported")
+    }
+
     if (batch.numCols == 0) {
       Array(batch).zipWithIndex
     } else {

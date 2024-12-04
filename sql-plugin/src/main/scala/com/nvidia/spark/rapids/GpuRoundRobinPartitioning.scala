@@ -78,6 +78,10 @@ case class GpuRoundRobinPartitioning(numPartitions: Int)
   }
 
   override def columnarEvalAny(batch: ColumnarBatch): Any = {
+    if (usesCelebornShuffle) {
+      throw new UnsupportedOperationException("Celeborn shuffle is not supported for round-robin " +
+        "partitioning")
+    }
     if (batch.numCols() <= 0) {
       return Array(batch).zipWithIndex
     }

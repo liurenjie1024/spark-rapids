@@ -1,29 +1,25 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
-import java.io.{BufferedOutputStream, IOException, OutputStream}
+import java.util.concurrent.{LinkedBlockingQueue, TimeUnit}
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference, LongAdder}
 
-import java.util
-import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
+import scala.collection.mutable.ArrayBuffer
 
-import com.github.luben.zstd.{NoPool, RecyclingBufferPool, ZstdOutputStreamNoFinalizer}
+import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
 import com.nvidia.spark.rapids.GpuMetric
 import com.nvidia.spark.rapids.shuffle.{HostColumnarBatchPartition, PartitionedHostColumnarBatch}
 import org.apache.celeborn.client.ShuffleClient
-import org.apache.celeborn.client.write.DataPusher
 import org.apache.celeborn.common.CelebornConf
-import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
 
+import org.apache.spark.{SparkContext, SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
-import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SortBasedPusher, SparkUtils}
-import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_ACCU_BUFFER_TIME, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_PUSH_GIANT_RECORD_TIME, METRIC_STOP_TIME}
+import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SparkUtils}
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_CLOSE_TIME, METRIC_COPY_TO_SHUFFLE_CLIENT_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_OFFER_DATA_TIME, METRIC_STOP_TIME, WAIT_TIME_NANO}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
-import org.apache.spark.sql.types.DataType
-import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.unsafe.Platform
 
 
 class GpuCelebornShuffleWriter[K, V](
@@ -33,35 +29,30 @@ class GpuCelebornShuffleWriter[K, V](
     val conf: CelebornConf,
     val shuffleClient: ShuffleClient,
     val metricsReporter: ShuffleWriteMetricsReporter,
-    val sendBufferPool: SendBufferPool,
 ) extends ShuffleWriter[K, V] with Logging {
 
-  private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
-  private val serOutputStream = dep.serializer.newInstance().serializeStream(serBuffer)
   private val mapId = taskContext.partitionId()
-
   private val numPartitions = dep.partitioner.numPartitions
   private val mapStatusLengths = Array.fill(numPartitions)(new LongAdder())
-  private val pusher = new SortBasedPusher(taskContext.taskMemoryManager,
-    shuffleClient, taskContext, dep.shuffleId, mapId,
-    taskContext.attemptNumber,
-    taskContext.taskAttemptId,
-    numMappers, numPartitions, conf,
-    v => metricsReporter.incBytesWritten(v.longValue()),
-    mapStatusLengths,
-    conf.clientPushSortMemoryThreshold,
-    sendBufferPool)
+  private val gpuPusher = new GpuDataPusherTask(
+    new GpuDataPusher(conf.clientPushSortMemoryThreshold,
+      dep.serializer.newInstance(),
+      shuffleClient,
+      mapStatusLengths,
+      dep.metrics,
+      dep.shuffleId,
+      mapId,
+      taskContext.attemptNumber(),
+      numMappers,
+      numPartitions),
+    1,
+    taskContext.taskAttemptId(),
+    dep.metrics
+  )
 
-  private val pushBufferMaxSize = conf.clientPushBufferMaxSize
-
-  private var tmpRecordsWritten = 0L
-  private var peakMemoryUsedBytes = 0L
   private val stopping: AtomicBoolean = new AtomicBoolean(false)
 
   private val extraMetrics = dep.metrics
-  private val accuBufferTime: GpuMetric = extraMetrics(METRIC_ACCU_BUFFER_TIME)
-  private val doPushTime: GpuMetric = extraMetrics(METRIC_DO_PUSH_TIME)
-  private val pushGiantRecordTime: GpuMetric = extraMetrics(METRIC_PUSH_GIANT_RECORD_TIME)
   private val doWriteTime: GpuMetric = extraMetrics(METRIC_DO_WRITE_TIME)
   private val closeTime: GpuMetric = extraMetrics(METRIC_CLOSE_TIME)
   private val stopTime: GpuMetric = extraMetrics(METRIC_STOP_TIME)
@@ -78,79 +69,21 @@ class GpuCelebornShuffleWriter[K, V](
 
   private def doWrite(records: Iterator[Product2[K, V]]): Unit = {
     for (r <- records) {
-      val partitionId = r._1.asInstanceOf[Int]
-      val batch = r._2.asInstanceOf[ColumnarBatch]
       doWriteTime.ns {
-        writeOneBatch(partitionId, batch)
+        val batch = r._2.asInstanceOf[PartitionedHostColumnarBatch]
+        gpuPusher.insert(batch)
       }
-    }
-  }
-
-  private def writeOneBatch(partitionId: Int, batch: ColumnarBatch): Unit = {
-    serBuffer.reset()
-    serOutputStream.writeKey(partitionId)
-    serOutputStream.writeValue(batch)
-    serOutputStream.flush()
-
-
-    val serializedRecordSize = serBuffer.size()
-
-    if (serializedRecordSize > pushBufferMaxSize) {
-      GpuMetric.ns(pushGiantRecordTime) {
-        pushGiantRecord(partitionId, serBuffer.getBuf, serializedRecordSize)
-      }
-    } else {
-      var success = GpuMetric.ns(accuBufferTime) {
-        pusher.insertRecord(serBuffer.getBuf,
-          Platform.BYTE_ARRAY_OFFSET,
-          serializedRecordSize, partitionId, false)
-      }
-      if (!success) {
-        doPush()
-        success = GpuMetric.ns(accuBufferTime) {
-          pusher.insertRecord(serBuffer.getBuf,
-            Platform.BYTE_ARRAY_OFFSET,
-            serializedRecordSize, partitionId, false)
-        }
-
-        if (!success) {
-          throw new IOException("Unable to push after switching pusher!")
-        }
-      }
-    }
-
-    tmpRecordsWritten += 1
-
-  }
-
-  private def pushGiantRecord(partitionId: Int, buffer: Array[Byte], numBytes: Int): Unit = {
-    logDebug(s"Pushing giant record of size $numBytes to partition $partitionId")
-    val bytesWritten = shuffleClient.pushData(dep.shuffleId, mapId, taskContext.attemptNumber(),
-      partitionId,
-      buffer,
-      0,
-      numBytes,
-      numMappers,
-      numPartitions)
-
-    mapStatusLengths(partitionId).add(bytesWritten)
-    metricsReporter.incRecordsWritten(bytesWritten)
-  }
-
-  private def doPush(): Unit = {
-    GpuMetric.ns(doPushTime) {
-      pusher.pushData(true)
     }
   }
 
   private def close(): Unit = {
-    logInfo(s"Closing writer for mapId $mapId, memory used ${pusher.getUsed}")
+    logInfo(s"Closing writer for mapId $mapId")
 
-    pusher.pushData(false)
-    pusher.close()
+    gpuPusher.awaitTermination()
 
     shuffleClient.pushMergedData(dep.shuffleId, mapId, taskContext.attemptNumber())
-    metricsReporter.incRecordsWritten(tmpRecordsWritten)
+    metricsReporter.incRecordsWritten(gpuPusher.pusher.recordsWritten)
+    metricsReporter.incBytesWritten(gpuPusher.pusher.bytesWritten)
 
     shuffleClient.mapperEnd(dep.shuffleId, mapId, taskContext.attemptNumber(), numMappers)
   }
@@ -158,7 +91,6 @@ class GpuCelebornShuffleWriter[K, V](
   override def stop(success: Boolean): Option[MapStatus] = {
     GpuMetric.ns(stopTime) {
       try {
-        taskContext.taskMetrics().incPeakExecutionMemory(getPeakMemoryUsed)
         if (!stopping.get()) {
           stopping.set(true)
           if (success) {
@@ -187,92 +119,180 @@ class GpuCelebornShuffleWriter[K, V](
   override def getPartitionLengths(): Array[Long] = throw new UnsupportedOperationException(
     "Celeborn is not compatible with push-based shuffle, " +
       "please set spark.shuffle.push.enabled to false")
-
-  private def updatePeakMemoryUsed(): Unit = {
-    val memoryUsed = pusher.getUsed
-    if (memoryUsed > peakMemoryUsedBytes) {
-      peakMemoryUsedBytes = memoryUsed
-    }
-  }
-
-  def getPeakMemoryUsed: Long = {
-    updatePeakMemoryUsed()
-    peakMemoryUsedBytes
-  }
 }
 
 object GpuCelebornShuffleWriter {
   private[celeborn] val DEFAULT_INITIAL_SER_BUFFER_SIZE: Int = 1024 * 1024
+  private[celeborn] val WAIT_TIME_NANO = TimeUnit.MILLISECONDS.toNanos(500)
 
-  private val METRIC_ACCU_BUFFER_TIME = "accumulateBufferTime"
-  private val METRIC_DO_PUSH_TIME = "celeborn.doPushTime"
-  private val METRIC_DO_WRITE_TIME = "celeborn.doWriteTime"
-  private val METRIC_CLOSE_TIME = "celeborn.closeTime"
-  private val METRIC_STOP_TIME = "celeborn.stopTime"
-  private val METRIC_PUSH_GIANT_RECORD_TIME = "celeborn.pushGiantRecordTime"
+  private[celeborn] val METRIC_DO_PUSH_TIME = "celeborn.doPushTime"
+  private[celeborn] val METRIC_DO_WRITE_TIME = "celeborn.doWriteTime"
+  private[celeborn] val METRIC_CLOSE_TIME = "celeborn.closeTime"
+  private[celeborn] val METRIC_STOP_TIME = "celeborn.stopTime"
+  private[celeborn] val METRIC_COPY_TO_SHUFFLE_CLIENT_TIME = "celeborn.copyToShuffleClientTime"
+  private[celeborn] val METRIC_OFFER_DATA_TIME = "celeborn.offerDataTime"
 
   def createMetrics(sc: SparkContext): Map[String, GpuMetric] = {
     Map(
-      METRIC_ACCU_BUFFER_TIME -> createNanoTimingMetric(sc,
-        "celeborn accumulating buffer time "),
-      METRIC_PUSH_GIANT_RECORD_TIME -> createNanoTimingMetric(sc,
-        "celeborn push giant record time"),
       METRIC_DO_WRITE_TIME -> createNanoTimingMetric(sc, "celeborn do write time"),
       METRIC_DO_PUSH_TIME -> createNanoTimingMetric(sc, "celeborn do push time"),
       METRIC_CLOSE_TIME -> createNanoTimingMetric(sc, "celeborn close time"),
-      METRIC_STOP_TIME -> createNanoTimingMetric(sc, "celeborn stop time")
+      METRIC_STOP_TIME -> createNanoTimingMetric(sc, "celeborn stop time"),
+      METRIC_COPY_TO_SHUFFLE_CLIENT_TIME -> createNanoTimingMetric(sc,
+        "celeborn copy to shuffle client time"),
+      METRIC_OFFER_DATA_TIME -> createNanoTimingMetric(sc, "celeborn offer data time")
     )
   }
 }
 
 class GpuDataPusher(val maxBufferSize: Long,
-    val zstdCompressionLevel: Int,
-    val zstdUseBufferPool: Boolean,
-    val zstdWorkers: Int,
-    val zstdBufferSize: Int,
-    val numPartitions: Int,
-    val dataPusher: DataPusher,
     val serializerInst: SerializerInstance,
+    val shuffleClient: ShuffleClient,
+    val mapStatus: Array[LongAdder],
+    val metrics: Map[String, GpuMetric],
+    val shuffleId: Int,
+    val mapId: Int,
+    val attemptId: Int,
+    val numMappers: Int,
+    val numPartitions: Int,
 ) {
-  private val memoryBuf = new util.ArrayList[PartitionedHostColumnarBatch]()
+  private val memoryBuf = new ArrayBuffer[PartitionedHostColumnarBatch](32)
   private var accumulatedBufferSize = 0L
   private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
+  private var tmpBytesWritten: Long = 0L
+  private var tmpRecordsWritten: Long = 0L
+
+
+  private val copyToTaskTime: GpuMetric = metrics(METRIC_COPY_TO_SHUFFLE_CLIENT_TIME)
+  private val doPushTime: GpuMetric = metrics(METRIC_DO_PUSH_TIME)
 
   def insert(partitionedTable: PartitionedHostColumnarBatch) = {
     if (accumulatedBufferSize + partitionedTable.memorySize >= maxBufferSize) {
       push()
     } else {
-      memoryBuf.add(partitionedTable)
+      memoryBuf += partitionedTable
       accumulatedBufferSize += partitionedTable.memorySize
     }
   }
 
-  private def push() = {
+  def recordsWritten: Long = tmpRecordsWritten
+  def bytesWritten: Long = tmpBytesWritten
 
+  private def push() = {
+    withResource(memoryBuf) { _ =>
+      for (partitionId <- 0 until numPartitions) {
+        pushOnePartition(partitionId,  memoryBuf.map(_.getPartition(partitionId)))
+
+        if (serBuffer.size() > 0) {
+          val buf = copyToTaskTime.ns {
+            val buf = new Array[Byte](serBuffer.size())
+            System.arraycopy(serBuffer.getBuf, 0, buf, 0, serBuffer.size())
+            buf
+          }
+
+          doPushTime.ns {
+            tmpBytesWritten += shuffleClient.pushData(
+              shuffleId, mapId, attemptId, partitionId, buf, 0, buf.length,
+              numMappers, numPartitions)
+
+            mapStatus(partitionId).add(tmpBytesWritten)
+          }
+        }
+      }
+    }
+
+    memoryBuf.clear()
   }
 
   private def pushOnePartition(partitionId: Int,
-      partitions: Iterator[HostColumnarBatchPartition]) = {
+      partitions: Iterable[HostColumnarBatchPartition]) = {
     serBuffer.reset()
-    val serStream = serializerInst.serializeStream(createZstdOutputStream)
-    serStream.writeKey(partitionId)
+    val serStream = serializerInst.serializeStream(serBuffer)
     for (partition <- partitions) {
-      serStream.writeValue(partition)
+      if (partition.numRows > 0) {
+        serStream.writeKey(partitionId)
+        serStream.writeValue(partition)
+
+        tmpRecordsWritten += 1L
+      }
     }
     serStream.flush()
   }
+}
 
-  private def createZstdOutputStream: OutputStream = {
-    val bufferPool = if (zstdUseBufferPool) {
-      RecyclingBufferPool.INSTANCE
-    } else {
-      NoPool.INSTANCE
+sealed trait Msg
+
+case object Eof extends Msg
+case class Data(data: PartitionedHostColumnarBatch) extends Msg
+
+class GpuDataPusherTask(val pusher: GpuDataPusher,
+    val batchBufferSize: Int,
+    val taskId: Long,
+    val metrics: Map[String, GpuMetric]
+) extends Logging {
+  private val exception: AtomicReference[Throwable] = new AtomicReference[Throwable]()
+  private val dataQueue = new LinkedBlockingQueue[Msg](batchBufferSize)
+  private val pushThead = createPushThread
+
+  private val offerDataTime = metrics(METRIC_OFFER_DATA_TIME)
+
+  def insert(data: PartitionedHostColumnarBatch): Unit =  {
+    insertMsg(Data(data))
+  }
+
+  def awaitTermination() = {
+    insertMsg(Eof)
+    pushThead.join()
+    checkException()
+  }
+
+  private def insertMsg(msg: Msg): Unit = offerDataTime.ns {
+    while (true) {
+      checkException()
+      if (dataQueue.offer(msg, WAIT_TIME_NANO, TimeUnit.NANOSECONDS)) {
+        return
+      }
     }
+  }
 
-    val zstd = new ZstdOutputStreamNoFinalizer(serBuffer, bufferPool)
-      .setLevel(zstdCompressionLevel)
-      .setWorkers(zstdWorkers)
+  private def checkException() = {
+    val e = exception.get()
+    if (e != null) {
+      throw e
+    }
+  }
 
-    new BufferedOutputStream(zstd, zstdBufferSize)
+
+  private def createPushThread: Thread = {
+    val threadName = "gpu-celeborn-data-pusher-" + taskId
+    val thread = new Thread(() => {
+      try {
+        GpuDataPusherTask.this.run()
+      } catch {
+        case e: Throwable =>
+          exception.set(e)
+      }
+    }, threadName)
+
+    thread.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+      override def uncaughtException(t: Thread, e: Throwable): Unit = {
+        logError(s"Uncaught exception in thread ${t.getName}", e)
+      }
+    })
+
+    thread.start()
+    thread
+  }
+
+  private def run() = {
+    var eof = false
+    while (!eof) {
+      dataQueue.poll(WAIT_TIME_NANO, TimeUnit.NANOSECONDS) match {
+        case Eof =>
+          eof = true
+        case Data(data) =>
+          pusher.insert(data)
+      }
+    }
   }
 }

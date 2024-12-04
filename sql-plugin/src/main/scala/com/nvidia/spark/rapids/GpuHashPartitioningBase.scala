@@ -16,10 +16,14 @@
 
 package com.nvidia.spark.rapids
 
-import ai.rapids.cudf.{DType, NvtxColor, NvtxRange, PartitionedTable}
+import ai.rapids.cudf.{Cuda, DType, NvtxColor, NvtxRange, PartitionedTable}
 import com.nvidia.spark.rapids.Arm.withResource
+import com.nvidia.spark.rapids.RapidsPluginImplicits.AutoCloseableProducingSeq
+import com.nvidia.spark.rapids.RmmRapidsRetryIterator.withRetryNoSplit
 import com.nvidia.spark.rapids.shims.ShimExpression
+import com.nvidia.spark.rapids.shuffle.PartitionedHostColumnarBatch
 
+import org.apache.spark.TaskContext
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.rapids.{GpuMurmur3Hash, GpuPmod}
 import org.apache.spark.sql.types.{DataType, IntegerType}
@@ -29,7 +33,9 @@ abstract class GpuHashPartitioningBase(expressions: Seq[Expression], numPartitio
   extends GpuExpression with ShimExpression with GpuPartitioning with Serializable {
 
   override def children: Seq[Expression] = expressions
+
   override def nullable: Boolean = false
+
   override def dataType: DataType = IntegerType
 
   def partitionInternalAndClose(batch: ColumnarBatch): (Array[Int], Array[GpuColumnVector]) = {
@@ -50,15 +56,52 @@ abstract class GpuHashPartitioningBase(expressions: Seq[Expression], numPartitio
   override def columnarEvalAny(batch: ColumnarBatch): Any = {
     //  We are doing this here because the cudf partition command is at this level
     withResource(new NvtxRange("Hash partition", NvtxColor.PURPLE)) { _ =>
-      val numRows = batch.numRows
-      val (partitionIndexes, partitionColumns) = {
-        withResource(new NvtxRange("partition", NvtxColor.BLUE)) { _ =>
-          partitionInternalAndClose(batch)
+      if (usesCelebornShuffle) {
+        partitionToHostAndClose(batch)
+      } else {
+        val numRows = batch.numRows
+        val (partitionIndexes, partitionColumns) = {
+          withResource(new NvtxRange("partition", NvtxColor.BLUE)) { _ =>
+            partitionInternalAndClose(batch)
+          }
         }
+        sliceInternalGpuOrCpuAndClose(numRows, partitionIndexes, partitionColumns)
       }
-      sliceInternalGpuOrCpuAndClose(numRows, partitionIndexes, partitionColumns)
     }
   }
+
+  private def partitionToHostAndClose(batch: ColumnarBatch): PartitionedHostColumnarBatch = {
+    val partedTable = GpuHashPartitioningBase.hashPartitionAndClose(batch, expressions,
+      numPartitions, "Calculate part")
+    withResource(partedTable) { partedTable =>
+      val parts = partedTable.getPartitions
+      val tp = partedTable.getTable
+
+      val numRows = batch.numRows()
+      val numCols = batch.numCols()
+
+      // We need to make sure that we have a null count calculated ahead of time.
+      // This should be a temp work around.
+      (0 until numCols).foreach { index =>
+        tp.getColumn(index).getNullCount
+      }
+
+      val hostCols = withRetryNoSplit {
+        (0 until numCols)
+          .map(tp.getColumn)
+          .safeMap(_.copyToHostAsync(Cuda.DEFAULT_STREAM))
+          .toArray
+      }
+
+      Cuda.DEFAULT_STREAM.sync()
+
+      // Leaving the GPU for a while
+      GpuSemaphore.releaseIfNecessary(TaskContext.get())
+
+      PartitionedHostColumnarBatch(numRows, parts, hostCols)
+    }
+  }
+
 
   def partitionIdExpression: GpuExpression = GpuPmod(
     GpuMurmur3Hash(expressions, GpuHashPartitioningBase.DEFAULT_HASH_SEED),
@@ -89,5 +132,4 @@ object GpuHashPartitioningBase {
       }
     }
   }
-
 }
