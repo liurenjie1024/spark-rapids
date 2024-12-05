@@ -225,6 +225,10 @@ case class GpuRangePartitioner(
   }
 
   override def columnarEvalAny(batch: ColumnarBatch): Any = {
+    if (usesCelebornShuffle) {
+      throw new UnsupportedOperationException("celeborn shuffle + range partitioning is not " +
+        "supported")
+    }
     if (rangeBounds.nonEmpty) {
       val (parts, partitionColumns) = computeBoundsAndCloseWithRetry(batch)
       sliceInternalGpuOrCpuAndClose(partitionColumns.head.getRowCount.toInt,

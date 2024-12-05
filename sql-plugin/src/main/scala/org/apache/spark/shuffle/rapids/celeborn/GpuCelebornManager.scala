@@ -1,5 +1,8 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
+import java.util.concurrent.{Executors, ExecutorService, ThreadFactory}
+import java.util.concurrent.atomic.AtomicInteger
+
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
 
@@ -8,8 +11,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
 import org.apache.spark.shuffle.{ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter}
-import org.apache.spark.shuffle.celeborn.{ExecutorShuffleIdTracker, SendBufferPool, SparkUtils}
-import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornManager.executorCores
+import org.apache.spark.shuffle.celeborn.{ExecutorShuffleIdTracker, SparkUtils}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.util.Utils
 
@@ -17,9 +19,11 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   Logging {
   private val celebornConf = SparkUtils.fromSparkConf(conf)
   private val shuffleIdTracker = new ExecutorShuffleIdTracker();
-  private val cores = executorCores(conf)
-  private val sendBufferPoolCheckInterval = celebornConf.clientPushSendBufferPoolExpireCheckInterval
-  private val sendBufferPoolExpireTimeout = celebornConf.clientPushSendBufferPoolExpireTimeout
+  private val _writeExecutor = Executors.newCachedThreadPool(new ThreadFactory {
+    private val nextID = new AtomicInteger(0)
+    override def newThread(r: Runnable): Thread = new Thread(r,
+      s"celeborn data pusher - ${nextID.getAndIncrement()}")
+  })
 
   private var appUniqueId: Option[String] = None
   private var shuffleClient: Option[ShuffleClient] = None
@@ -72,6 +76,9 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
 
     lifecycleManager.foreach(_.stop())
     lifecycleManager = None
+
+    _writeExecutor.shutdown()
+    _writeExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)
   }
 
   def getWriter[K, V](
@@ -97,7 +104,8 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       celebornConf,
       shuffleClient.get,
       metrics,
-      SendBufferPool.get(cores, sendBufferPoolCheckInterval, sendBufferPoolExpireTimeout))
+      _writeExecutor,
+    )
   }
 
   def getReader[K, C](handle: GpuCelebornShuffleHandle[K, _, C],

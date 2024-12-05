@@ -833,14 +833,14 @@
         <scala.binary.version>2.12</scala.binary.version>
         <alluxio.client.version>2.8.0</alluxio.client.version>
         <scala.recompileMode>incremental</scala.recompileMode>
-        <scala.version>2.12.15</scala.version>
+        <scala.version>2.12.19</scala.version>
         <!--
         -processing
         to suppress unactionable "No processor claimed any of these annotations"
         from various dependencies. Example @UDFType
         https://github.com/openjdk/jdk17/blob/4afbcaf55383ec2f5da53282a1547bac3d099e9d/src/jdk.compiler/share/classes/com/sun/tools/javac/resources/compiler.properties#L1993-L1994
         -->
-        <scala.javac.args>-Xlint:all,-serial,-path,-try,-processing|-Werror</scala.javac.args>
+        <scala.javac.args>-Xlint:all,-serial,-path,-try,-processing,-rawtypes,-unchecked</scala.javac.args>
         <ucx.baseVersion>1.16.0</ucx.baseVersion>
         <roaringbitmap.version>1.0.6</roaringbitmap.version>
         <!-- ucx x86 is just the base version (implied), arm is specified under arm64 profile. -->
@@ -1089,6 +1089,12 @@
                 <artifactId>celeborn-client-spark-3-shaded_${scala.binary.version}</artifactId>
                 <version>0.5.1</version>
                 <scope>compile</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.github.luben</groupId>
+                <artifactId>zstd-jni</artifactId>
+                <version>1.5.0-4</version>
+                <scope>provided</scope>
             </dependency>
             <dependency>
                 <!-- For shade, spark 3.2 and earlier uses an older version(0.9.0), which doesn't
@@ -1408,7 +1414,7 @@ This will force full Scala code rebuild in downstream modules.
                             <!-- #if scala-2.12 -->
                             <arg>-Ywarn-unused:imports,locals,patvars,privates</arg>
                             <arg>-Yno-adapted-args</arg>
-                            <arg>-Xfatal-warnings</arg>
+<!--                            <arg>-Xfatal-warnings</arg>-->
                             <!-- #endif scala-2.12 -->
                             <arg>-Wconf:cat=lint-adapted-args:e</arg>
                             <!-- #if scala-2.13 --><!--

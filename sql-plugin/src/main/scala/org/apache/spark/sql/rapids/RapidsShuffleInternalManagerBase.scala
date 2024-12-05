@@ -1369,7 +1369,7 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
           metricsReporter,
           getCatalogOrThrow,
           server,
-          gpu.dependency.metrics)
+          gpu.dependency.sqlMetrics)
       case bmssh: BypassMergeSortShuffleHandle[_, _] =>
         bmssh.dependency match {
           case gpuDep: GpuShuffleDependency[_, _, _]
@@ -1379,7 +1379,7 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
             // with 0 threads we fallback to the Spark-provided writer.
             val handleWithMetrics = new ShuffleHandleWithMetrics(
               bmssh.shuffleId,
-              gpuDep.metrics,
+              gpuDep.sqlMetrics,
               // cast the handle with specific generic types due to type-erasure
               gpuDep.asInstanceOf[GpuShuffleDependency[K, V, V]])
             // we need to track this mapId so we can clean it up later on unregisterShuffle
@@ -1468,7 +1468,7 @@ class RapidsShuffleInternalManagerBase(conf: SparkConf, val isDriver: Boolean)
               SortShuffleManager.canUseBatchFetch(startPartition, endPartition, context)
 
             val shuffleHandleWithMetrics = new ShuffleHandleWithMetrics(
-              baseHandle.shuffleId, gpuDep.metrics, gpuDep)
+              baseHandle.shuffleId, gpuDep.sqlMetrics, gpuDep)
             // in most scenarios, the pools have already started, except for local mode
             // here we try to start them if we see they haven't
             RapidsShuffleInternalManagerBase.startThreadPoolIfNeeded(

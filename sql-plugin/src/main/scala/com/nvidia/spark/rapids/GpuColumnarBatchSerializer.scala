@@ -28,8 +28,9 @@ import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
 import com.nvidia.spark.rapids.jni.kudo.{KudoSerializer, KudoTable, KudoTableHeader}
-
+import com.nvidia.spark.rapids.shuffle.HostColumnarBatchPartition
 import org.apache.spark.TaskContext
+
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
 import org.apache.spark.sql.types.{DataType, NullType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -40,6 +41,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 trait BaseSerializedTableIterator extends Iterator[(Int, ColumnarBatch)] {
   /**
    * Attempt to read the next batch size from the stream.
+   *
    * @return the length of the data to read, or None if the stream is closed or ended
    */
   def peekNextBatchSize(): Option[Long]
@@ -312,7 +314,7 @@ object SerializedTableColumn {
         case kudo: KudoSerializedTableColumn =>
           sum += Option(kudo.kudoTable.getBuffer).map(_.getLength).getOrElse(0L)
         case _ =>
-          throw new IllegalStateException(s"Unexpected column type: ${cv.getClass}" )
+          throw new IllegalStateException(s"Unexpected column type: ${cv.getClass}")
       }
     }
     sum
@@ -337,10 +339,21 @@ private class KudoSerializerInstance(
       new DataOutputStream(new BufferedOutputStream(out))
 
     override def writeValue[T: ClassTag](value: T): SerializationStream = {
-      val batch = value.asInstanceOf[ColumnarBatch]
+      value match {
+        case batch: ColumnarBatch => serializeColumnarBatch(batch)
+        case HostColumnarBatchPartition(_, start, numRows, hostVectors) =>
+          withResource(new NvtxRange("Serialize Partition", NvtxColor.YELLOW)) { _ =>
+            dataSize += kudo.writeToStream(hostVectors, dOut, start, numRows)
+          }
+      }
+
+      this
+    }
+
+    private def serializeColumnarBatch(batch: ColumnarBatch) = {
       val numColumns = batch.numCols()
       val columns: Array[HostColumnVector] = new Array(numColumns)
-      withResource(new ArrayBuffer[AutoCloseable]()) { toClose =>
+      withResource(new ArrayBuffer[AutoCloseable](columns.length)) { toClose =>
         var startRow = 0
         val numRows = batch.numRows()
         if (batch.numCols() > 0) {
@@ -375,9 +388,9 @@ private class KudoSerializerInstance(
             dataSize += KudoSerializer.writeRowCountToStream(dOut, numRows)
           }
         }
-        this
       }
     }
+
 
     override def writeKey[T: ClassTag](key: T): SerializationStream = {
       // The key is only needed on the map side when computing partition ids. It does not need to
