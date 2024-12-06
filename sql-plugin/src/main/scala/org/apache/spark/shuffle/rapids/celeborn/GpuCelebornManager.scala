@@ -1,8 +1,5 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
-import java.util.concurrent.{Executors, ExecutorService, ThreadFactory}
-import java.util.concurrent.atomic.AtomicInteger
-
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
 
