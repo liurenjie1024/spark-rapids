@@ -1,6 +1,5 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
 
 import scala.collection.mutable.ArrayBuffer
@@ -18,7 +17,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
-import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SparkUtils}
+import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SparkUtils, TaskInterruptedHelper}
 import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -51,11 +50,10 @@ class GpuCelebornShuffleWriter[K, V](
       mapStatusLengths)
     new GpuDataPusher(conf.clientPushSortMemoryThreshold,
       dep.serializer.newInstance(),
+      sendBufferPool,
       dataPusher,
       dep.metrics,
-      numPartitions,
-
-    )
+      numPartitions)
   }
 
   private val stopping: AtomicBoolean = new AtomicBoolean(false)
@@ -159,6 +157,7 @@ object GpuCelebornShuffleWriter {
 
 class GpuDataPusher(val maxBufferSize: Long,
     val serializerInst: SerializerInstance,
+    val sendBufferPool: SendBufferPool,
     val dataPusher: DataPusher,
     val metrics: Map[String, GpuMetric],
     val numPartitions: Int,
@@ -181,7 +180,13 @@ class GpuDataPusher(val maxBufferSize: Long,
 
   def close(): Unit = {
     pushLeft
-    dataPusher.waitOnTermination()
+    try {
+      dataPusher.waitOnTermination()
+      sendBufferPool.returnPushTaskQueue(dataPusher.getIdleQueue)
+    } catch {
+      case _: InterruptedException =>
+        TaskInterruptedHelper.throwTaskKillException()
+    }
   }
 
   private def pushLeft = {
