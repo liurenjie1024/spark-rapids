@@ -20,12 +20,13 @@ import scala.collection.AbstractIterator
 import scala.concurrent.Future
 
 import com.nvidia.spark.rapids._
+import com.nvidia.spark.rapids.GpuMetric.{DEBUG_LEVEL, ESSENTIAL_LEVEL, MODERATE_LEVEL}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.shims.{GpuHashPartitioning, GpuRangePartitioning, ShimUnaryExecNode, ShuffleOriginUtil, SparkShimImpl}
 import com.nvidia.spark.rapids.shuffle.PartitionedHostColumnarBatch
 import com.nvidia.spark.rapids.GpuMetric.{NUM_OUTPUT_BATCHES, NUM_OUTPUT_ROWS}
-import org.apache.spark.{MapOutputStatistics, ShuffleDependency}
 
+import org.apache.spark.{MapOutputStatistics, ShuffleDependency}
 import org.apache.spark.rapids.shims.GpuShuffleExchangeExec
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
@@ -40,6 +41,7 @@ import org.apache.spark.sql.execution.exchange.{Exchange, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.rapids.GpuShuffleDependency
+import org.apache.spark.sql.rapids.execution.GpuShuffleExchangeExecBase.createAdditionalExchangeMetrics
 import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
@@ -206,25 +208,12 @@ abstract class GpuShuffleExchangeExecBase(
 
   lazy val readMetrics =
     SQLShuffleReadMetricsReporter.createShuffleReadMetrics(sparkContext)
-  override lazy val additionalMetrics : Map[String, GpuMetric] = Map(
-    // dataSize and dataReadSize are uncompressed, one is on write and the 
-    // other on read
-    "dataSize" -> createSizeMetric(ESSENTIAL_LEVEL,"data size"),
-    "dataReadSize" -> createSizeMetric(MODERATE_LEVEL, "data read size"),
-    "rapidsShuffleSerializationTime" ->
-        createNanoTimingMetric(DEBUG_LEVEL,"rs. serialization time"),
-    "rapidsShuffleDeserializationTime" ->
-        createNanoTimingMetric(DEBUG_LEVEL,"rs. deserialization time"),
-    "rapidsShuffleWriteTime" ->
-        createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle write time"),
-    "rapidsShuffleCombineTime" ->
-        createNanoTimingMetric(DEBUG_LEVEL,"rs. shuffle combine time"),
-    "rapidsShuffleWriteIoTime" ->
-        createNanoTimingMetric(DEBUG_LEVEL,"rs. shuffle write io time"),
-    "rapidsShuffleReadTime" ->
-        createNanoTimingMetric(ESSENTIAL_LEVEL,"rs. shuffle read time")
-  ) ++ GpuMetric.wrap(readMetrics) ++ GpuMetric.wrap(writeMetrics) ++
-    GpuCelebornShuffleWriter.createMetrics(sparkContext)
+  override lazy val additionalMetrics : Map[String, GpuMetric] = {
+    createAdditionalExchangeMetrics(this) ++
+      GpuMetric.wrap(readMetrics) ++
+      GpuMetric.wrap(writeMetrics) ++
+      GpuCelebornShuffleWriter.createMetrics(sparkContext)
+  }
 
   // Spark doesn't report totalTime for this operator so we override metrics
   override lazy val allMetrics: Map[String, GpuMetric] = Map(
@@ -245,7 +234,7 @@ abstract class GpuShuffleExchangeExecBase(
   // This value must be lazy because the child's output may not have been resolved
   // yet in all cases.
   private lazy val serializer: Serializer = new GpuColumnarBatchSerializer(
-    gpuLongMetric("dataSize"), sparkTypes, useKudo)
+    allMetrics, sparkTypes, useKudo)
 
   @transient lazy val inputBatchRDD: RDD[ColumnarBatch] = child.executeColumnar()
 
@@ -289,6 +278,66 @@ abstract class GpuShuffleExchangeExecBase(
 }
 
 object GpuShuffleExchangeExecBase {
+  val METRIC_DATA_SIZE = "dataSize"
+  val METRIC_DESC_DATA_SIZE = "data size"
+  val METRIC_DATA_READ_SIZE = "dataReadSize"
+  val METRIC_DESC_DATA_READ_SIZE = "data read size"
+  val METRIC_SHUFFLE_SERIALIZATION_TIME = "rapidsShuffleSerializationTime"
+  val METRIC_DESC_SHUFFLE_SERIALIZATION_TIME = "RAPIDS shuffle serialization time"
+  val METRIC_SHUFFLE_SER_STREAM_TIME = "rapidsShuffleSerializationStreamTime"
+  val METRIC_DESC_SHUFFLE_SER_STREAM_TIME = "RAPIDS shuffle serialization to output stream time"
+  val METRIC_SHUFFLE_DESERIALIZATION_TIME = "rapidsShuffleDeserializationTime"
+  val METRIC_DESC_SHUFFLE_DESERIALIZATION_TIME = "RAPIDS shuffle deserialization time"
+  val METRIC_SHUFFLE_DESER_STREAM_TIME = "rapidsShuffleDeserializationStreamTime"
+  val METRIC_DESC_SHUFFLE_DESER_STREAM_TIME =
+    "RAPIDS shuffle deserialization from input stream time"
+  val METRIC_SHUFFLE_PARTITION_TIME = "rapidsShufflePartitionTime"
+  val METRIC_DESC_SHUFFLE_PARTITION_TIME = "RAPIDS shuffle partition time"
+  val METRIC_SHUFFLE_WRITE_TIME = "rapidsShuffleWriteTime"
+  val METRIC_DESC_SHUFFLE_WRITE_TIME = "RAPIDS shuffle shuffle write time"
+  val METRIC_SHUFFLE_COMBINE_TIME = "rapidsShuffleCombineTime"
+  val METRIC_DESC_SHUFFLE_COMBINE_TIME = "RAPIDS shuffle shuffle combine time"
+  val METRIC_SHUFFLE_WRITE_IO_TIME = "rapidsShuffleWriteIoTime"
+  val METRIC_DESC_SHUFFLE_WRITE_IO_TIME = "RAPIDS shuffle shuffle write io time"
+  val METRIC_SHUFFLE_READ_TIME = "rapidsShuffleReadTime"
+  val METRIC_DESC_SHUFFLE_READ_TIME = "RAPIDS shuffle shuffle read time"
+  val METRIC_SHUFFLE_SER_CALC_HEADER_TIME = "rapidsShuffleSerializationCalcHeaderTime"
+  val METRIC_DESC_SHUFFLE_SER_CALC_HEADER_TIME = "RAPIDS shuffle serialization calc header time"
+  val METRIC_SHUFFLE_SER_COPY_HEADER_TIME = "rapidsShuffleSerializationCopyHeaderTime"
+  val METRIC_DESC_SHUFFLE_SER_COPY_HEADER_TIME = "RAPIDS shuffle serialization copy header time"
+  val METRIC_SHUFFLE_SER_COPY_BUFFER_TIME = "rapidsShuffleSerializationCopyBufferTime"
+  val METRIC_DESC_SHUFFLE_SER_COPY_BUFFER_TIME = "RAPIDS shuffle serialization copy buffer time"
+
+  def createAdditionalExchangeMetrics(gpu: GpuExec): Map[String, GpuMetric] = Map(
+    // dataSize and dataReadSize are uncompressed, one is on write and the other on read
+    METRIC_DATA_SIZE -> gpu.createSizeMetric(ESSENTIAL_LEVEL, METRIC_DESC_DATA_SIZE),
+    METRIC_DATA_READ_SIZE -> gpu.createSizeMetric(MODERATE_LEVEL, METRIC_DESC_DATA_READ_SIZE),
+    METRIC_SHUFFLE_SERIALIZATION_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL,METRIC_DESC_SHUFFLE_SERIALIZATION_TIME),
+    METRIC_SHUFFLE_SER_STREAM_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_SER_STREAM_TIME),
+    METRIC_SHUFFLE_DESERIALIZATION_TIME  ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_DESERIALIZATION_TIME),
+    METRIC_SHUFFLE_DESER_STREAM_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_DESER_STREAM_TIME),
+    METRIC_SHUFFLE_PARTITION_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_PARTITION_TIME),
+    METRIC_SHUFFLE_WRITE_TIME ->
+        gpu.createNanoTimingMetric(ESSENTIAL_LEVEL, METRIC_DESC_SHUFFLE_WRITE_TIME),
+    METRIC_SHUFFLE_COMBINE_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_COMBINE_TIME),
+    METRIC_SHUFFLE_WRITE_IO_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_WRITE_IO_TIME),
+    METRIC_SHUFFLE_READ_TIME ->
+        gpu.createNanoTimingMetric(ESSENTIAL_LEVEL, METRIC_DESC_SHUFFLE_READ_TIME),
+    METRIC_SHUFFLE_SER_CALC_HEADER_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_SER_CALC_HEADER_TIME),
+    METRIC_SHUFFLE_SER_COPY_HEADER_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_SER_COPY_HEADER_TIME),
+    METRIC_SHUFFLE_SER_COPY_BUFFER_TIME ->
+        gpu.createNanoTimingMetric(DEBUG_LEVEL, METRIC_DESC_SHUFFLE_SER_COPY_BUFFER_TIME)
+  )
+
   def prepareBatchShuffleDependency(
       rdd: RDD[ColumnarBatch],
       outputAttributes: Seq[Attribute],
@@ -329,8 +378,11 @@ object GpuShuffleExchangeExecBase {
       rdd
     }
     val partitioner: GpuExpression = getPartitioner(newRdd, outputAttributes, newPartitioning)
+    val partitionTime: GpuMetric = metrics(METRIC_SHUFFLE_PARTITION_TIME)
     def getPartitioned: ColumnarBatch => Any = {
-      batch => partitioner.columnarEvalAny(batch)
+      batch => partitionTime.ns {
+        partitioner.columnarEvalAny(batch)
+      }
     }
     val rddWithPartitionIds: RDD[Product2[Int, ColumnarBatch]] = {
       if (!useCelebornShuffle) {
@@ -447,7 +499,6 @@ object GpuShuffleExchangeExecBase {
       partitioner: ColumnarBatch => Any ,
       outputRows: GpuMetric,
       outputBatches: GpuMetric,
-
   ): RDD[Product2[Int, ColumnarBatch]] = {
     baseRdd.map { batch =>
       val partitioned = partitioner(batch).asInstanceOf[PartitionedHostColumnarBatch]
