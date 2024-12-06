@@ -19,11 +19,6 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   Logging {
   private val celebornConf = SparkUtils.fromSparkConf(conf)
   private val shuffleIdTracker = new ExecutorShuffleIdTracker();
-  private val _writeExecutor = Executors.newCachedThreadPool(new ThreadFactory {
-    private val nextID = new AtomicInteger(0)
-    override def newThread(r: Runnable): Thread = new Thread(r,
-      s"celeborn data pusher - ${nextID.getAndIncrement()}")
-  })
 
   private var appUniqueId: Option[String] = None
   private var shuffleClient: Option[ShuffleClient] = None
@@ -76,9 +71,6 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
 
     lifecycleManager.foreach(_.stop())
     lifecycleManager = None
-
-    _writeExecutor.shutdown()
-    _writeExecutor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS)
   }
 
   def getWriter[K, V](
@@ -103,9 +95,7 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       context,
       celebornConf,
       shuffleClient.get,
-      metrics,
-      _writeExecutor,
-    )
+      metrics)
   }
 
   def getReader[K, C](handle: GpuCelebornShuffleHandle[K, _, C],
