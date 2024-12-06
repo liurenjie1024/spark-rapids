@@ -18,7 +18,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
-import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SparkUtils}
+import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SparkUtils}
 import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -31,20 +31,31 @@ class GpuCelebornShuffleWriter[K, V](
     val conf: CelebornConf,
     val shuffleClient: ShuffleClient,
     val metricsReporter: ShuffleWriteMetricsReporter,
+    val sendBufferPool: SendBufferPool,
 ) extends ShuffleWriter[K, V] with Logging {
 
   private val mapId = taskContext.partitionId()
   private val numPartitions = dep.partitioner.numPartitions
   private val mapStatusLengths = Array.fill(numPartitions)(new LongAdder())
   private val gpuPusher = {
-    val dataPusher = new DataPusher(dep.shuffleId, mapId, taskContext.attemptNumber(),
-      taskContext.taskAttemptId(), numMappers, numPartitions, conf, shuffleClient, null,
-      x => metricsReporter.incBytesWritten(x.toLong), mapStatusLengths)
+    val dataPusher = new DataPusher(dep.shuffleId,
+      mapId,
+      taskContext.attemptNumber(),
+      taskContext.taskAttemptId(),
+      numMappers,
+      numPartitions,
+      conf,
+      shuffleClient,
+      sendBufferPool.acquirePushTaskQueue(),
+      x => metricsReporter.incBytesWritten(x.toLong),
+      mapStatusLengths)
     new GpuDataPusher(conf.clientPushSortMemoryThreshold,
       dep.serializer.newInstance(),
       dataPusher,
       dep.metrics,
-      numPartitions)
+      numPartitions,
+
+    )
   }
 
   private val stopping: AtomicBoolean = new AtomicBoolean(false)

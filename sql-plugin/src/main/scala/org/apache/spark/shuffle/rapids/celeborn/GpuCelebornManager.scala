@@ -2,13 +2,14 @@ package org.apache.spark.shuffle.rapids.celeborn
 
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
-
 import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
 import org.apache.spark.shuffle.{ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter}
-import org.apache.spark.shuffle.celeborn.{ExecutorShuffleIdTracker, SparkUtils}
+import org.apache.spark.shuffle.celeborn.{ExecutorShuffleIdTracker, SendBufferPool, SparkUtils}
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornManager.executorCores
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.util.Utils
 
@@ -20,6 +21,9 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
   private var appUniqueId: Option[String] = None
   private var shuffleClient: Option[ShuffleClient] = None
   private var lifecycleManager: Option[LifecycleManager] = None
+  private val cores: Int = executorCores(conf)
+  private val sendBufferPoolCheckInterval = celebornConf.clientPushSendBufferPoolExpireCheckInterval
+  private val sendBufferPoolExpireTimeout = celebornConf.clientPushSendBufferPoolExpireTimeout
 
   def registerShuffle[K, V, C](shuffleId: Int, dependency: GpuShuffleDependency[K, V, C])
   : GpuCelebornShuffleHandle[K, V, C] = {
@@ -92,7 +96,8 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       context,
       celebornConf,
       shuffleClient.get,
-      metrics)
+      metrics,
+      SendBufferPool.get(cores, sendBufferPoolCheckInterval, sendBufferPoolExpireTimeout))
   }
 
   def getReader[K, C](handle: GpuCelebornShuffleHandle[K, _, C],
