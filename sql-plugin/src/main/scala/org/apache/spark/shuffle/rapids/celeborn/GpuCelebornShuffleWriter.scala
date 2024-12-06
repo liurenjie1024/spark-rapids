@@ -205,7 +205,7 @@ class GpuDataPusher(val maxBufferSize: Long,
 
         if (serBuffer.size() > 0) {
           doPushTime.ns {
-            dataPusher.addTask(partitionId, serBuffer.getBuf, 0)
+            dataPusher.addTask(partitionId, serBuffer.getBuf, serBuffer.size())
           }
         }
       }
