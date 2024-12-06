@@ -359,7 +359,12 @@ private class KudoSerializerInstance(
         case batch: ColumnarBatch => serializeColumnarBatch(batch)
         case HostColumnarBatchPartition(_, start, numRows, hostVectors) =>
           withResource(new NvtxRange("Serialize Partition", NvtxColor.YELLOW)) { _ =>
-            dataSize += kudo.writeToStream(hostVectors, dOut, start, numRows)
+            val writeMetric = kudo.writeToStreamWithMetrics(hostVectors, dOut, start, numRows)
+
+            dataSize += writeMetric.getWrittenBytes
+            serCalcHeaderTime += writeMetric.getCalcHeaderTime
+            serCopyHeaderTime += writeMetric.getCopyHeaderTime
+            serCopyBufferTime += writeMetric.getCopyBufferTime
           }
       }
 
