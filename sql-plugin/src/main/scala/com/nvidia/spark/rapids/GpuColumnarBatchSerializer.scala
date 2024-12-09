@@ -351,15 +351,12 @@ private class KudoSerializerInstance(
   private lazy val kudo = new KudoSerializer(GpuColumnVector.from(dataTypes))
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
-    private[this] val dOut: DataOutputStream =
-      new DataOutputStream(new BufferedOutputStream(out))
-
     override def writeValue[T: ClassTag](value: T): SerializationStream = serTime.ns {
       value match {
         case batch: ColumnarBatch => serializeColumnarBatch(batch)
         case HostColumnarBatchPartition(_, start, numRows, hostVectors) =>
           withResource(new NvtxRange("Serialize Partition", NvtxColor.YELLOW)) { _ =>
-            val writeMetric = kudo.writeToStreamWithMetrics(hostVectors, dOut, start, numRows)
+            val writeMetric = kudo.writeToStreamWithMetrics(hostVectors, out, start, numRows)
 
             dataSize += writeMetric.getWrittenBytes
             serCalcHeaderTime += writeMetric.getCalcHeaderTime
@@ -402,7 +399,7 @@ private class KudoSerializerInstance(
           }
 
           withResource(new NvtxRange("Serialize Batch", NvtxColor.YELLOW)) { _ =>
-            val writeMetric = kudo.writeToStreamWithMetrics(columns, dOut, startRow, numRows)
+            val writeMetric = kudo.writeToStreamWithMetrics(columns, out, startRow, numRows)
 
             dataSize += writeMetric.getWrittenBytes
             serCalcHeaderTime += writeMetric.getCalcHeaderTime
@@ -411,7 +408,7 @@ private class KudoSerializerInstance(
           }
         } else {
           withResource(new NvtxRange("Serialize Row Only Batch", NvtxColor.YELLOW)) { _ =>
-            dataSize += KudoSerializer.writeRowCountToStream(dOut, numRows)
+            dataSize += KudoSerializer.writeRowCountToStream(out, numRows)
           }
         }
       }
@@ -436,11 +433,11 @@ private class KudoSerializerInstance(
     }
 
     override def flush(): Unit = {
-      dOut.flush()
+      out.flush()
     }
 
     override def close(): Unit = {
-      dOut.close()
+      out.close()
     }
   }
 
