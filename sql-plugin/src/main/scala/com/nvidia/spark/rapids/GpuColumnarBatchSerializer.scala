@@ -365,7 +365,9 @@ private class KudoSerializerInstance(
         case batch: ColumnarBatch => serializeColumnarBatch(batch)
         case HostColumnarBatchPartition(_, start, numRows, hostVectors) =>
           withResource(new NvtxRange("Serialize Partition", NvtxColor.YELLOW)) { _ =>
-            val writeMetric = kudo.writeToStreamWithMetrics(hostVectors, out, start, numRows)
+            val writeMetric = kudo
+            .getOrElse(throw new IllegalStateException("Kudo serializer not initialized."))
+            .writeToStreamWithMetrics(hostVectors, out, start, numRows)
 
             dataSize += writeMetric.getWrittenBytes
             serCalcHeaderTime += writeMetric.getCalcHeaderTime
@@ -444,11 +446,11 @@ private class KudoSerializerInstance(
     }
 
     override def flush(): Unit = {
-      dOut.flush()
+      out.flush()
     }
 
     override def close(): Unit = {
-      dOut.close()
+      out.close()
     }
   }
 
