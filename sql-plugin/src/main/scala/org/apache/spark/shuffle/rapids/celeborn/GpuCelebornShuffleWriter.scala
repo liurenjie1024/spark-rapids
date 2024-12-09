@@ -8,6 +8,7 @@ import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
 import com.nvidia.spark.rapids.GpuMetric
 import com.nvidia.spark.rapids.shuffle.{HostColumnarBatchPartition, PartitionedHostColumnarBatch, PartitionedHostColumnarBatchColumn}
+import com.nvidia.spark.rapids.jni.kudo.OpenByteArrayOutputStream
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.client.write.DataPusher
 import org.apache.celeborn.common.CelebornConf
@@ -17,7 +18,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
-import org.apache.spark.shuffle.celeborn.{OpenByteArrayOutputStream, SendBufferPool, SparkUtils, TaskInterruptedHelper}
+import org.apache.spark.shuffle.celeborn.{SendBufferPool, SparkUtils, TaskInterruptedHelper}
 import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch

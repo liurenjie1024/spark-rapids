@@ -2,8 +2,8 @@ package org.apache.spark.shuffle.rapids.celeborn
 
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
-import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
 
+import org.apache.spark.{MapOutputTrackerMaster, SparkConf, SparkContext, SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.rdd.DeterministicLevel
