@@ -294,7 +294,7 @@ object GpuShuffledHashJoinExec extends Logging {
       var isBuildSerialized = false
       // Batches type detection
       val coalesceBuiltIter = getHostShuffleCoalesceIterator(
-        bufBuildIter, buildDataType, targetSize, coalesceMetrics).map { iter =>
+        bufBuildIter, buildDataType, targetSize, coalesceMetrics, useKudoV2).map { iter =>
         isBuildSerialized = true
         iter
       }.getOrElse(bufBuildIter)
