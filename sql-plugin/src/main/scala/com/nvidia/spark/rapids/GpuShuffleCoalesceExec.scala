@@ -84,15 +84,19 @@ case class GpuShuffleCoalesceExec(child: SparkPlan, targetBatchByteSize: Long)
 }
 
 /** A case class to pack some options. Now it has only one, but may have more in the future */
-case class CoalesceReadOption private(kudoEnabled: Boolean)
+case class CoalesceReadOption private(kudoEnabled: Boolean, kudoV2: Boolean)
 
 object CoalesceReadOption {
   def apply(conf: SQLConf): CoalesceReadOption = {
-    CoalesceReadOption(RapidsConf.SHUFFLE_KUDO_SERIALIZER_ENABLED.get(conf))
+    CoalesceReadOption(
+      RapidsConf.SHUFFLE_KUDO_SERIALIZER_ENABLED.get(conf),
+      RapidsConf.SHUFFLE_KUDO_SERIALIZER_V2.get(conf))
   }
 
   def apply(conf: RapidsConf): CoalesceReadOption = {
-    CoalesceReadOption(conf.shuffleKudoSerializerEnabled)
+    CoalesceReadOption(
+      conf.shuffleKudoSerializerEnabled,
+      conf.shuffleKudoUseV2)
   }
 }
 
@@ -122,7 +126,8 @@ object GpuShuffleCoalesceUtils {
       metricsMap: Map[String, GpuMetric],
       prefetchFirstBatch: Boolean = false): Iterator[ColumnarBatch] = {
     val hostIter = if (readOption.kudoEnabled) {
-      new KudoHostShuffleCoalesceIterator(iter, targetSize, metricsMap, dataTypes)
+      new KudoHostShuffleCoalesceIterator(iter, targetSize, metricsMap, dataTypes,
+        readOption.kudoV2)
     } else {
       new HostShuffleCoalesceIterator(iter, targetSize, metricsMap)
     }
@@ -382,11 +387,12 @@ class KudoHostShuffleCoalesceIterator(
     iter: Iterator[ColumnarBatch],
     targetBatchSize: Long,
     metricsMap: Map[String, GpuMetric],
-    dataTypes: Array[DataType])
+    dataTypes: Array[DataType],
+    useV2: Boolean)
   extends HostCoalesceIteratorBase[KudoSerializedTableColumn](iter, targetBatchSize, metricsMap) {
   override protected def tableOperator = {
     val kudoSer = if (dataTypes.nonEmpty) {
-      Some(new KudoSerializer(GpuColumnVector.from(dataTypes)))
+      Some(new KudoSerializer(GpuColumnVector.from(dataTypes), useV2))
     } else {
       None
     }

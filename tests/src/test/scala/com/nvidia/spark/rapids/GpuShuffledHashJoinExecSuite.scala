@@ -61,7 +61,7 @@ class GpuShuffledHashJoinExecSuite extends AnyFunSuite with MockitoSugar {
       mockStreamIter,
       targetSize,
       buildAttrs,
-      buildGoal, None, metricMap)
+      buildGoal, None, metricMap, useKudoV2 = false)
 
     verifyBuiltData(builtData)
     // build iterator should be drained

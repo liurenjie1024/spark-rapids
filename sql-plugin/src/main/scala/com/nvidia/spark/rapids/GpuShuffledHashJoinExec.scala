@@ -195,6 +195,7 @@ case class GpuShuffledHashJoinExec(
     val subPartConf = RapidsConf.HASH_SUB_PARTITION_TEST_ENABLED.get(conf)
        .map(_ && RapidsConf.TEST_CONF.get(conf))
     val localBuildOutput = buildPlan.output
+    val useKudoV2 = RapidsConf.SHUFFLE_KUDO_SERIALIZER_V2.get(conf)
 
     // Create a map of metrics that can be handed down to shuffle and coalesce
     // iterators, setting as noop certain metrics that the coalesce iterators
@@ -213,7 +214,7 @@ case class GpuShuffledHashJoinExec(
         val (buildData, maybeBufferedStreamIter) =
           GpuShuffledHashJoinExec.prepareBuildBatchesForJoin(buildIter,
             new CollectTimeIterator("shuffled join stream", streamIter, streamTime),
-            realTarget, localBuildOutput, buildGoal, subPartConf, coalesceMetrics)
+            realTarget, localBuildOutput, buildGoal, subPartConf, coalesceMetrics, useKudoV2)
 
         buildData match {
           case Left(singleBatch) =>
@@ -283,7 +284,8 @@ object GpuShuffledHashJoinExec extends Logging {
       buildOutput: Seq[Attribute],
       buildGoal: CoalesceSizeGoal,
       subPartConf: Option[Boolean],
-      coalesceMetrics: Map[String, GpuMetric]):
+      coalesceMetrics: Map[String, GpuMetric],
+      useKudoV2: Boolean):
   (Either[ColumnarBatch, Iterator[ColumnarBatch]], Iterator[ColumnarBatch]) = {
     val buildTime = coalesceMetrics(GpuMetric.BUILD_TIME)
     val buildDataType = buildOutput.map(_.dataType).toArray
@@ -467,13 +469,15 @@ object GpuShuffledHashJoinExec extends Logging {
       iter: BufferedIterator[ColumnarBatch],
       dataTypes: Array[DataType],
       targetSize: Long,
-      coalesceMetrics: Map[String, GpuMetric]): Option[Iterator[CoalescedHostResult]] = {
+      coalesceMetrics: Map[String, GpuMetric],
+      useKudoV2: Boolean
+  ): Option[Iterator[CoalescedHostResult]] = {
     var retIter: Option[Iterator[CoalescedHostResult]] = None
     if (iter.hasNext && iter.head.numCols() == 1) {
       iter.head.column(0) match {
         case _: KudoSerializedTableColumn =>
           retIter = Some(new KudoHostShuffleCoalesceIterator(iter, targetSize, coalesceMetrics,
-            dataTypes))
+            dataTypes, useKudoV2))
         case _: SerializedTableColumn =>
           retIter = Some(new HostShuffleCoalesceIterator(iter, targetSize, coalesceMetrics))
         case _ => // should be gpu batches

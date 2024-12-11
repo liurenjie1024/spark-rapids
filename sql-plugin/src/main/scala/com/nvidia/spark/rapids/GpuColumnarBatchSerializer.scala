@@ -132,12 +132,12 @@ class SerializedBatchIterator(dIn: DataInputStream, deserTime: GpuMetric)
  * @note The RAPIDS shuffle does not use this code.
  */
 class GpuColumnarBatchSerializer(metrics: Map[String, GpuMetric], dataTypes: Array[DataType],
-    useKudo: Boolean)
+    useKudo: Boolean, useKudoV2: Boolean)
   extends Serializer with Serializable {
 
   private lazy val kudo = {
     if (useKudo && dataTypes.nonEmpty) {
-      Some(new KudoSerializer(GpuColumnVector.from(dataTypes)))
+      Some(new KudoSerializer(GpuColumnVector.from(dataTypes), useKudoV2))
     } else {
       None
     }

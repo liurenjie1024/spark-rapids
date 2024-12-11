@@ -1968,6 +1968,12 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     .booleanConf
     .createWithDefault(false)
 
+  val SHUFFLE_KUDO_SERIALIZER_V2 = conf("spark.rapids.shuffle.kudo.serializer.v2")
+    .doc("Enable v2 per column serializer")
+    .startupOnly()
+    .booleanConf
+    .createWithDefault(false)
+
   // ALLUXIO CONFIGS
   val ALLUXIO_MASTER = conf("spark.rapids.alluxio.master")
     .doc("The Alluxio master hostname. If not set, read Alluxio master URL from " +
@@ -3145,6 +3151,8 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   lazy val shuffleMultiThreadedReaderThreads: Int = get(SHUFFLE_MULTITHREADED_READER_THREADS)
 
   lazy val shuffleKudoSerializerEnabled: Boolean = get(SHUFFLE_KUDO_SERIALIZER_ENABLED)
+
+  lazy val shuffleKudoUseV2: Boolean = get(SHUFFLE_KUDO_SERIALIZER_V2)
 
   def isUCXShuffleManagerMode: Boolean =
     RapidsShuffleManagerMode
