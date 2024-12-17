@@ -1,5 +1,6 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
+import com.nvidia.spark.rapids.RapidsConf
 import org.apache.celeborn.client.{LifecycleManager, ShuffleClient}
 import org.apache.celeborn.reflect.DynMethods
 
@@ -16,6 +17,7 @@ import org.apache.spark.util.Utils
 class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Boolean) extends
   Logging {
   private val celebornConf = SparkUtils.fromSparkConf(conf)
+  private val rapidsConf = new RapidsConf(conf)
   private val shuffleIdTracker = new ExecutorShuffleIdTracker();
 
   private var appUniqueId: Option[String] = None
@@ -95,6 +97,7 @@ class GpuCelebornManager(private val conf: SparkConf, private val isDriver: Bool
       handle.numMappers,
       context,
       celebornConf,
+      rapidsConf,
       shuffleClient.get,
       metrics,
       SendBufferPool.get(cores, sendBufferPoolCheckInterval, sendBufferPoolExpireTimeout))
