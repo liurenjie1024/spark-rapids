@@ -27,15 +27,12 @@ import ai.rapids.cudf.JCudfSerialization.SerializedTableHeader
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.RapidsPluginImplicits._
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
-import com.nvidia.spark.rapids.jni.kudo.{KudoSerializer, KudoTable, KudoTableHeader}
+import com.nvidia.spark.rapids.jni.kudo.{KudoSerializer, KudoTable, KudoTableHeader, OutputArgs}
 import com.nvidia.spark.rapids.shuffle.HostColumnarBatchPartition
 
 import org.apache.spark.TaskContext
 import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer, SerializerInstance}
-import org.apache.spark.sql.rapids.execution.GpuShuffleExchangeExecBase.{METRIC_DATA_SIZE,
-  METRIC_SHUFFLE_DESER_STREAM_TIME, METRIC_SHUFFLE_SER_CALC_HEADER_TIME,
-  METRIC_SHUFFLE_SER_COPY_BUFFER_TIME, METRIC_SHUFFLE_SER_COPY_HEADER_TIME,
-  METRIC_SHUFFLE_SER_STREAM_TIME}
+import org.apache.spark.sql.rapids.execution.GpuShuffleExchangeExecBase.{METRIC_DATA_SIZE, METRIC_SHUFFLE_DESER_STREAM_TIME, METRIC_SHUFFLE_SER_CALC_HEADER_TIME, METRIC_SHUFFLE_SER_COPY_BUFFER_TIME, METRIC_SHUFFLE_SER_COPY_HEADER_TIME, METRIC_SHUFFLE_SER_STREAM_TIME}
 import org.apache.spark.sql.types.{DataType, NullType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -132,12 +129,12 @@ class SerializedBatchIterator(dIn: DataInputStream, deserTime: GpuMetric)
  * @note The RAPIDS shuffle does not use this code.
  */
 class GpuColumnarBatchSerializer(metrics: Map[String, GpuMetric], dataTypes: Array[DataType],
-    useKudo: Boolean)
+    useKudo: Boolean, measureKudoCopyBufferTime: Boolean)
   extends Serializer with Serializable {
 
   private lazy val kudo = {
     if (useKudo && dataTypes.nonEmpty) {
-      Some(new KudoSerializer(GpuColumnVector.from(dataTypes)))
+      Some(new KudoSerializer(GpuColumnVector.from(dataTypes), measureKudoCopyBufferTime))
     } else {
       None
     }
@@ -347,7 +344,7 @@ object SerializedTableColumn {
  * @param dataSize  metric to track the size of the serialized data
  * @param dataTypes data types of the columns in the batch
  */
-private class KudoSerializerInstance(
+class KudoSerializerInstance(
     val metrics: Map[String, GpuMetric],
     val dataTypes: Array[DataType],
     val kudo: Option[KudoSerializer]
@@ -452,6 +449,21 @@ private class KudoSerializerInstance(
     override def close(): Unit = {
       out.close()
     }
+
+  }
+
+  def multiWrite(cols: Array[HostColumnVector],
+      outputs: java.util.List[OutputArgs]) = serTime.ns {
+    withResource(new NvtxRange("Serialize Partition", NvtxColor.YELLOW)) { _ =>
+      val writeMetric = kudo
+        .getOrElse(throw new IllegalStateException("Kudo serializer not initialized."))
+        .writeToStreamWithMetrics(cols, outputs)
+
+      dataSize += writeMetric.getWrittenBytes
+      serCalcHeaderTime += writeMetric.getCalcHeaderTime
+      serCopyHeaderTime += writeMetric.getCopyHeaderTime
+      serCopyBufferTime += writeMetric.getCopyBufferTime
+    }
   }
 
   override def deserializeStream(in: InputStream): DeserializationStream = {
@@ -488,6 +500,8 @@ private class KudoSerializerInstance(
       }
     }
   }
+
+
 
   // These methods are never called by shuffle code.
   override def serialize[T: ClassTag](t: T): ByteBuffer = throw new UnsupportedOperationException

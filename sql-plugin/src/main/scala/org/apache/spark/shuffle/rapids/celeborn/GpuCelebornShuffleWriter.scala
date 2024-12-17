@@ -1,14 +1,15 @@
 package org.apache.spark.shuffle.rapids.celeborn
 
+import java.util.{ArrayList => JArrayList}
 import java.util.concurrent.atomic.{AtomicBoolean, LongAdder}
 
 import scala.collection.mutable.ArrayBuffer
 
+import com.nvidia.spark.rapids.{GpuMetric, KudoSerializerInstance, RapidsConf}
 import com.nvidia.spark.rapids.Arm.withResource
 import com.nvidia.spark.rapids.GpuExec.createNanoTimingMetric
-import com.nvidia.spark.rapids.GpuMetric
+import com.nvidia.spark.rapids.jni.kudo.{OpenByteArrayOutputStream, OutputArgs}
 import com.nvidia.spark.rapids.shuffle.{HostColumnarBatchPartition, PartitionedHostColumnarBatch, PartitionedHostColumnarBatchColumn}
-import com.nvidia.spark.rapids.jni.kudo.OpenByteArrayOutputStream
 import org.apache.celeborn.client.ShuffleClient
 import org.apache.celeborn.client.write.DataPusher
 import org.apache.celeborn.common.CelebornConf
@@ -19,7 +20,7 @@ import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.{SendBufferPool, SparkUtils, TaskInterruptedHelper}
-import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_STOP_TIME}
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -29,6 +30,7 @@ class GpuCelebornShuffleWriter[K, V](
     val numMappers: Int,
     val taskContext: TaskContext,
     val conf: CelebornConf,
+    val rapidsConf: RapidsConf,
     val shuffleClient: ShuffleClient,
     val metricsReporter: ShuffleWriteMetricsReporter,
     val sendBufferPool: SendBufferPool,
@@ -54,7 +56,10 @@ class GpuCelebornShuffleWriter[K, V](
       sendBufferPool,
       dataPusher,
       dep.metrics,
-      numPartitions)
+      numPartitions,
+      rapidsConf.shuffleKudoInitBufferSize,
+      rapidsConf.shuffleKudoMultiWrite
+    )
   }
 
   private val stopping: AtomicBoolean = new AtomicBoolean(false)
@@ -162,10 +167,14 @@ class GpuDataPusher(val maxBufferSize: Long,
     val dataPusher: DataPusher,
     val metrics: Map[String, GpuMetric],
     val numPartitions: Int,
+    val initBufferSize: Int,
+    val multiWriteBatchSize: Int,
 ) {
-  private val memoryBuf = new ArrayBuffer[PartitionedHostColumnarBatch](32)
+  private val memoryBuf = new ArrayBuffer[PartitionedHostColumnarBatch](8)
   private var accumulatedBufferSize = 0L
-  private val serBuffer = new OpenByteArrayOutputStream(DEFAULT_INITIAL_SER_BUFFER_SIZE)
+  private val serBuffers = Array.tabulate[OpenByteArrayOutputStream](multiWriteBatchSize)(_ =>
+    new OpenByteArrayOutputStream(initBufferSize))
+  private val outputArgs = new JArrayList[OutputArgs](multiWriteBatchSize)
   private var tmpRecordsWritten: Long = 0L
 
 
@@ -199,10 +208,20 @@ class GpuDataPusher(val maxBufferSize: Long,
 
   def recordsWritten: Long = tmpRecordsWritten
 
+
   private def doPush(): Unit = {
+    if (multiWriteBatchSize > 1) {
+      doPushWithMultiWrite()
+    } else {
+      doPushWithoutMultiWrite()
+    }
+  }
+
+  private def doPushWithoutMultiWrite(): Unit = {
     withResource(memoryBuf) { _ =>
       for (partitionId <- 0 until numPartitions) {
-        pushOnePartition(partitionId, memoryBuf.map(_.getPartition(partitionId)))
+        val serBuffer = serBuffers(0)
+        pushOnePartition(partitionId, memoryBuf.map(_.getPartition(partitionId)), serBuffer)
 
         if (serBuffer.size() > 0) {
           doPushTime.ns {
@@ -216,8 +235,50 @@ class GpuDataPusher(val maxBufferSize: Long,
     memoryBuf.clear()
   }
 
+  private def doPushWithMultiWrite(): Unit = {
+    withResource(memoryBuf) { _ =>
+      for (batch <- memoryBuf) {
+        for (startPartitionId <- 0 until numPartitions by multiWriteBatchSize) {
+          outputArgs.clear()
+          val endPartitionId = math.min(startPartitionId + multiWriteBatchSize, numPartitions)
+          for (partitionId <- startPartitionId until endPartitionId) {
+            val partition = batch.getPartition(partitionId)
+            val serBuffer = serBuffers(partitionId - startPartitionId)
+            serBuffer.reset()
+            if (partition.numRows > 0) {
+              outputArgs.add(new OutputArgs(partition.start, partition.numRows,
+                serBuffer))
+            }
+          }
+
+          if (!outputArgs.isEmpty) {
+            // No data to push
+
+            val serializer = serializerInst.asInstanceOf[KudoSerializerInstance]
+            serializer.multiWrite(batch.hostVectors, outputArgs)
+
+            for (partitionId <- startPartitionId until endPartitionId) {
+              val serBuffer = serBuffers(partitionId - startPartitionId)
+              if (serBuffer.size() > 0) {
+                tmpRecordsWritten += 1
+                doPushTime.ns {
+                  dataPusher.addTask(partitionId, serBuffer.getBuf, serBuffer.size())
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    accumulatedBufferSize = 0
+    memoryBuf.clear()
+  }
+
   private def pushOnePartition(partitionId: Int,
-      partitions: Iterable[HostColumnarBatchPartition]) = {
+      partitions: Iterable[HostColumnarBatchPartition],
+      serBuffer: OpenByteArrayOutputStream
+  ) = {
     serBuffer.reset()
     val serStream = serializerInst.serializeStream(serBuffer)
     for (partition <- partitions) {

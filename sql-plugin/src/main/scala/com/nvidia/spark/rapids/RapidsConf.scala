@@ -1968,6 +1968,31 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     .booleanConf
     .createWithDefault(false)
 
+  val SHUFFLE_KUDO_SERIALIZER_MEASURE_COPY_BUFFER_TIME_ENABLED =
+    conf("spark.rapids.shuffle.kudo.copy.buffer.measure.enabled")
+    .doc("Enable or disable measure Kudo serializer for the shuffle.")
+    .internal()
+    .startupOnly()
+    .booleanConf
+    .createWithDefault(false)
+
+  val SHUFFLE_KUDO_SERIALIZER_PRE_ALLOCATE_BUFFER_SIZE =
+    conf("spark.rapids.shuffle.kudo.preallocate.buffer.size")
+      .doc("Kudo serializer's preallocate buffer size")
+      .internal()
+      .startupOnly()
+      .integerConf
+      .createWithDefault(64 * 1024)
+
+  val SHUFFLE_KUDO_SERIALIZER_BATCH_RECORD_SIZE =
+    conf("spark.rapids.shuffle.kudo.batch.record.size")
+      .doc("Kudo serializer's batch record buffer size")
+      .internal()
+      .startupOnly()
+      .integerConf
+      .createWithDefault(1)
+
+
   // ALLUXIO CONFIGS
   val ALLUXIO_MASTER = conf("spark.rapids.alluxio.master")
     .doc("The Alluxio master hostname. If not set, read Alluxio master URL from " +
@@ -3145,6 +3170,17 @@ class RapidsConf(conf: Map[String, String]) extends Logging {
   lazy val shuffleMultiThreadedReaderThreads: Int = get(SHUFFLE_MULTITHREADED_READER_THREADS)
 
   lazy val shuffleKudoSerializerEnabled: Boolean = get(SHUFFLE_KUDO_SERIALIZER_ENABLED)
+
+  lazy val shuffleKudoInitBufferSize: Int = get(SHUFFLE_KUDO_SERIALIZER_PRE_ALLOCATE_BUFFER_SIZE)
+
+  lazy val shuffleKudoMultiWrite: Int = {
+    val v = get(SHUFFLE_KUDO_SERIALIZER_BATCH_RECORD_SIZE)
+    if (v <= 0) {
+      throw new IllegalArgumentException(
+        s"Value for ${SHUFFLE_KUDO_SERIALIZER_BATCH_RECORD_SIZE.key} must be positive, but was $v")
+    }
+    v
+  }
 
   def isUCXShuffleManagerMode: Boolean =
     RapidsShuffleManagerMode
