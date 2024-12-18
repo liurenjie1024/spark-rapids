@@ -20,7 +20,7 @@ import org.apache.spark.scheduler.MapStatus
 import org.apache.spark.serializer.SerializerInstance
 import org.apache.spark.shuffle.{ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.{SendBufferPool, SparkUtils, TaskInterruptedHelper}
-import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{DEFAULT_INITIAL_SER_BUFFER_SIZE, METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_STOP_TIME}
+import org.apache.spark.shuffle.rapids.celeborn.GpuCelebornShuffleWriter.{METRIC_CLOSE_TIME, METRIC_DO_PUSH_TIME, METRIC_DO_WRITE_TIME, METRIC_STOP_TIME}
 import org.apache.spark.sql.rapids.GpuShuffleDependency
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
