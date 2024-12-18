@@ -251,15 +251,19 @@ class GpuDataPusher(val maxBufferSize: Long,
             }
           }
 
-          val serializer = serializerInst.asInstanceOf[KudoSerializerInstance]
-          serializer.multiWrite(batch.hostVectors, outputArgs)
+          if (!outputArgs.isEmpty) {
+            // No data to push
 
-          for (partitionId <- startPartitionId until endPartitionId) {
-            val serBuffer = serBuffers(partitionId - startPartitionId)
-            if (serBuffer.size() > 0) {
-              tmpRecordsWritten += 1
-              doPushTime.ns {
-                dataPusher.addTask(partitionId, serBuffer.getBuf, serBuffer.size())
+            val serializer = serializerInst.asInstanceOf[KudoSerializerInstance]
+            serializer.multiWrite(batch.hostVectors, outputArgs)
+
+            for (partitionId <- startPartitionId until endPartitionId) {
+              val serBuffer = serBuffers(partitionId - startPartitionId)
+              if (serBuffer.size() > 0) {
+                tmpRecordsWritten += 1
+                doPushTime.ns {
+                  dataPusher.addTask(partitionId, serBuffer.getBuf, serBuffer.size())
+                }
               }
             }
           }
