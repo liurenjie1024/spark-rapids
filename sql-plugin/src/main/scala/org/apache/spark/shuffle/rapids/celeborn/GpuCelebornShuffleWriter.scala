@@ -245,8 +245,10 @@ class GpuDataPusher(val maxBufferSize: Long,
             val partition = batch.getPartition(partitionId)
             val serBuffer = serBuffers(partitionId - startPartitionId)
             serBuffer.reset()
-            outputArgs.add(new OutputArgs(partition.start, partition.numRows,
-              serBuffer))
+            if (partition.numRows > 0) {
+              outputArgs.add(new OutputArgs(partition.start, partition.numRows,
+                serBuffer))
+            }
           }
 
           val serializer = serializerInst.asInstanceOf[KudoSerializerInstance]
