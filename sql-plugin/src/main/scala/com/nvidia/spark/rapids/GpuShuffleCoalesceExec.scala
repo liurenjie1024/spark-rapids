@@ -25,7 +25,7 @@ import ai.rapids.cudf.JCudfSerialization.HostConcatResult
 import com.nvidia.spark.rapids.Arm.{closeOnExcept, withResource}
 import com.nvidia.spark.rapids.GpuMetric.{CONCAT_BUFFER_TIME, CONCAT_HEADER_TIME}
 import com.nvidia.spark.rapids.ScalableTaskCompletion.onTaskCompletion
-import com.nvidia.spark.rapids.jni.kudo.{KudoHostMergeResult, KudoSerializer, KudoTable}
+import com.nvidia.spark.rapids.jni.kudo.{KudoHostMergeResult, KudoSerializer}
 import com.nvidia.spark.rapids.shims.ShimUnaryExecNode
 
 import org.apache.spark.TaskContext
@@ -237,7 +237,6 @@ class KudoTableOperator(
     kudoMergeHeaderTime: GpuMetric,
     kudoMergeBufferTime: GpuMetric) extends SerializedTableOperator[KudoSerializedTableColumn] {
   require(kudo != null, "kudo serializer should not be null")
-  private val kudoTables = new util.ArrayList[KudoTable]()
 
   override def getDataLen(column: KudoSerializedTableColumn): Long = column.kudoTable.getHeader
     .getTotalDataLen
@@ -252,13 +251,7 @@ class KudoTableOperator(
       val totalRowsNum = columns.map(getNumRows).sum
       RowCountOnlyMergeResult(totalRowsNum)
     } else {
-      kudoTables.clear()
-      kudoTables.ensureCapacity(columns.length)
-      columns.foreach { column =>
-        kudoTables.add(column.kudoTable)
-      }
-
-      val result = kudo.get.mergeOnHost(kudoTables)
+      val result = kudo.get.mergeOnHost(columns.map(_.kudoTable))
       kudoMergeHeaderTime += result.getRight.getCalcHeaderTime
       kudoMergeBufferTime += result.getRight.getMergeIntoHostBufferTime
 
