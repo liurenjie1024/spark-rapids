@@ -399,7 +399,9 @@ class GpuShuffleCoalesceIterator(iter: Iterator[CoalescedHostResult],
   private[this] val outputBatchesMetric = metricsMap(GpuMetric.NUM_OUTPUT_BATCHES)
   private[this] val outputRowsMetric = metricsMap(GpuMetric.NUM_OUTPUT_ROWS)
 
-  override def hasNext: Boolean = iter.hasNext
+  override def hasNext: Boolean = withResource(new MetricRange(opTimeMetric)) { _ =>
+    iter.hasNext
+  }
 
   override def next(): ColumnarBatch = {
     if (!hasNext) {
