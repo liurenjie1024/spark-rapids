@@ -352,9 +352,6 @@ private class KudoSerializerInstance(
 ) extends SerializerInstance {
   private val dataSize = metrics(METRIC_DATA_SIZE)
   private val serTime = metrics(METRIC_SHUFFLE_SER_STREAM_TIME)
-  private val serCalcHeaderTime = metrics(METRIC_SHUFFLE_SER_CALC_HEADER_TIME)
-  private val serCopyHeaderTime = metrics(METRIC_SHUFFLE_SER_COPY_HEADER_TIME)
-  private val serCopyBufferTime = metrics(METRIC_SHUFFLE_SER_COPY_BUFFER_TIME)
   private val deserTime = metrics(METRIC_SHUFFLE_DESER_STREAM_TIME)
 
   override def serializeStream(out: OutputStream): SerializationStream = new SerializationStream {
@@ -395,9 +392,6 @@ private class KudoSerializerInstance(
               .writeToStreamWithMetrics(columns, out, startRow, numRows)
 
             dataSize += writeMetric.getWrittenBytes
-            serCalcHeaderTime += writeMetric.getCalcHeaderTime
-            serCopyHeaderTime += writeMetric.getCopyHeaderTime
-            serCopyBufferTime += writeMetric.getCopyBufferTime
           }
         } else {
           withResource(new NvtxRange("Serialize Row Only Batch", NvtxColor.YELLOW)) { _ =>
