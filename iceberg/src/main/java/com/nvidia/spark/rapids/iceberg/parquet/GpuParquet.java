@@ -190,4 +190,5 @@ public class GpuParquet {
 
     return optionsBuilder.build();
   }
+
 }
