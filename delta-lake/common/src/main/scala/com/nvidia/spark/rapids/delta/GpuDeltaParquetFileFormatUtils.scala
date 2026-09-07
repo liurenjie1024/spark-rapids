@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024, NVIDIA CORPORATION.
+ * Copyright (c) 2024-2026, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,8 +28,8 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 object GpuDeltaParquetFileFormatUtils {
   /**
    * Row number of the row in the file. When used with [[FILE_PATH_COL]] together, it can be used
-   * as unique id of a row in file. Currently to correctly calculate this, the caller needs to
-   * set both [[isSplitable]] to false, and [[RapidsConf.PARQUET_READER_TYPE]] to "PERFILE".
+   * as unique id of a row in file. To calculate this correctly, the caller needs to make each file
+   * unsplittable and reset the row offset when a multi-file reader advances to the next file.
    */
   val METADATA_ROW_IDX_COL: String = "__metadata_row_index"
   val METADATA_ROW_IDX_FIELD: StructField = StructField(METADATA_ROW_IDX_COL, LongType,
@@ -63,23 +63,37 @@ object GpuDeltaParquetFileFormatUtils {
     }
     var rowIndex = 0L
     input.map { batch =>
-      withResource(batch) { _ =>
-        val rowIdxCol = if (metadataRowIndexCol == -1) {
-          None
-        } else {
-          Some(metadataRowIndexCol)
-        }
+      val numRows = batch.numRows()
+      val newBatch = addMetadataColumnsToBatch(schema, delVector, batch, maxBatchSize,
+        rowIndex, delVectorScatterTimeMetric)
+      rowIndex += numRows
+      newBatch
+    }
+  }
 
-        val delRowIdx2 = if (delRowIdx == -1) {
-          None
-        } else {
-          Some(delRowIdx)
-        }
-        val newBatch = addMetadataColumns(rowIdxCol, delRowIdx2, delVector,maxBatchSize,
-          rowIndex, batch, delVectorScatterTimeMetric)
-        rowIndex += batch.numRows()
-        newBatch
-      }
+  /**
+   * Add low-shuffle metadata columns to one batch at the specified file-global row offset.
+   * This entry point is used by multi-file readers, which reset the offset when the input file
+   * changes.
+   */
+  def addMetadataColumnsToBatch(
+      schema: StructType,
+      delVector: Option[Roaring64Bitmap],
+      batch: ColumnarBatch,
+      maxBatchSize: Int,
+      rowIndex: Long,
+      delVectorScatterTimeMetric: GpuMetric): ColumnarBatch = {
+    val metadataRowIndexCol = schema.fieldNames.indexOf(METADATA_ROW_IDX_COL)
+    val delRowIdx = schema.fieldNames.indexOf(METADATA_ROW_DEL_COL)
+    withResource(batch) { _ =>
+      addMetadataColumns(
+        if (metadataRowIndexCol == -1) None else Some(metadataRowIndexCol),
+        if (delRowIdx == -1) None else Some(delRowIdx),
+        delVector,
+        maxBatchSize,
+        rowIndex,
+        batch,
+        delVectorScatterTimeMetric)
     }
   }
 

@@ -2886,8 +2886,9 @@ val SHUFFLE_COMPRESSION_LZ4_CHUNK_SIZE = conf("spark.rapids.shuffle.compression.
     conf("spark.rapids.sql.delta.lowShuffleMerge.enabled")
     .doc("Option to turn on the low shuffle merge for Delta Lake. Currently there are some " +
       "limitations for this feature: " +
-      "1. We only support Delta Lake 2.4. " +
-      s"2. The file scan mode must be set to ${RapidsReaderType.PERFILE} " +
+      "1. We support Delta Lake 2.4 and Databricks Runtime 17.3. " +
+      s"2. Delta Lake 2.4 requires the ${RapidsReaderType.PERFILE} file scan mode; " +
+      "Databricks Runtime 17.3 supports all Parquet reader modes. " +
       "3. The deletion vector size must be smaller than " +
       s"${DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_THRESHOLD.key} ")
     .booleanConf
