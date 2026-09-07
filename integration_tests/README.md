@@ -86,8 +86,6 @@ For manual installation, you need to setup your environment:
 - pytest
   : A framework that makes it easy to write small, readable tests, and can scale to support complex
   functional testing for applications and libraries (requires  Python 3.6+).
-- PyYAML
-  : Parses the Iceberg and Spark integration-test compatibility matrix used by CI.
 - sre_yield
   : Provides a set of APIs to generate string data from a regular expression.
 - pandas

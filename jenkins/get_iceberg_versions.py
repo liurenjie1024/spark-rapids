@@ -17,6 +17,7 @@
 """Read and validate the Iceberg integration-test compatibility matrix."""
 
 import argparse
+import json
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -24,11 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import yaml
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MATRIX = REPO_ROOT / "iceberg" / "iceberg-versions.yml"
+DEFAULT_MATRIX = REPO_ROOT / "iceberg" / "iceberg-versions.json"
 DEFAULT_POM = REPO_ROOT / "pom.xml"
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 SPARK_PROPERTY_PATTERN = re.compile(r"^spark[0-9]+\.version$")
@@ -164,7 +162,7 @@ class IcebergVersionMatrix:
     @classmethod
     def load(cls, matrix_path=DEFAULT_MATRIX, pom_path=DEFAULT_POM):
         with open(matrix_path, encoding="utf-8") as stream:
-            document = yaml.safe_load(stream)
+            document = json.load(stream)
         if not isinstance(document, dict) or set(document) != {"iceberg_versions"}:
             raise MatrixError("matrix must contain only an iceberg_versions list")
         entries = document["iceberg_versions"]
@@ -240,7 +238,7 @@ def main(arguments=None):
             versions = matrix.supported_iceberg_versions(args.spark_version)
         print(" ".join(versions))
         return 0
-    except (MatrixError, ET.ParseError, OSError, yaml.YAMLError) as error:
+    except (MatrixError, ET.ParseError, OSError, json.JSONDecodeError) as error:
         print(f"Iceberg test matrix error: {error}", file=sys.stderr)
         return 1
 
