@@ -27,7 +27,8 @@ Iceberg release, `upstream_minimums` is copied from the Spark versions in Apache
 release that Iceberg builds and tests against; cudf-spark treats that patch as the minimum
 upstream-compatible version.
 
-The `spark_versions` list is computed from the `spark*.version` properties in the root `pom.xml`.
+The `spark_versions` list is computed from the `spark*.version` properties in
+`scala2.13/pom.xml`.
 For each family in `upstream_minimums`, it contains every cudf-spark shim whose patch version is
 greater than or equal to the upstream minimum. A shim is marked as supported when cudf-spark
 packages the corresponding Iceberg integration module. Upstream-compatible shims that are not

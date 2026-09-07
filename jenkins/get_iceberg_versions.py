@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = REPO_ROOT / "iceberg" / "iceberg-versions.json"
-DEFAULT_POM = REPO_ROOT / "pom.xml"
+DEFAULT_POM = REPO_ROOT / "scala2.13" / "pom.xml"
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 SPARK_PROPERTY_PATTERN = re.compile(r"^spark[0-9]+\.version$")
 
