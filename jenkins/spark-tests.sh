@@ -387,7 +387,7 @@ run_iceberg_tests() {
       env \
         HOST_NAME=$PROJECT_REPO_HOST \
         EXPECTED_ICEBERG_VERSION=${ICEBERG_VERSION} \
-        ICEBERG_TEST_FAST_RUN=1 \
+        ICEBERG_TEST_FAST_RUN="${ICEBERG_TEST_FAST_RUN:-0}" \
         PYSP_TEST_spark_driver_memory=1G \
         PYSP_TEST_spark_executor_memory=2G \
         PYSP_TEST_spark_jars_packages=org.apache.iceberg:iceberg-spark-runtime-${ICEBERG_SPARK_VER}_${SCALA_BINARY_VER}:${ICEBERG_VERSION} \
