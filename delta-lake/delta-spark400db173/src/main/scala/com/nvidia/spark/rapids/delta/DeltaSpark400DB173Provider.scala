@@ -122,9 +122,7 @@ object DeltaSpark400DB173Provider extends DatabricksDeltaProviderBase {
   override def getReadFileFormat(
       relation: HadoopFsRelation, rapidsConf: RapidsConf): FileFormat = {
     val fmt = relation.fileFormat.asInstanceOf[DeltaParquetFileFormat]
-    if (GpuLowShuffleMergeScanRegistry.lookup(relation.options).isDefined) {
-      GpuDeltaParquetFileFormat.convertToGpu(relation)
-    } else if (isPushDVPredicateDownEnabled(rapidsConf)) {
+    if (isPushDVPredicateDownEnabled(rapidsConf)) {
       GpuDeltaParquetFileFormatNativeDV(
         relation = relation,
         protocol = fmt.protocol,

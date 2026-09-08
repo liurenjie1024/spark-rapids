@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024-2026, NVIDIA CORPORATION.
+ * Copyright (c) 2026, NVIDIA CORPORATION.
  *
  * This file was derived from MergeIntoCommand.scala
  * in the Delta Lake project at https://github.com/delta-io/delta.
@@ -21,18 +21,22 @@
 
 package com.databricks.sql.transaction.tahoe.rapids
 
-import java.net.URI
 import java.util.concurrent.TimeUnit
 
 import scala.annotation.nowarn
 import scala.collection.mutable
 
+import com.databricks.sql.io.RowIndexFilterType
 import com.databricks.sql.transaction.tahoe._
 import com.databricks.sql.transaction.tahoe.DeltaOperations.MergePredicate
-import com.databricks.sql.transaction.tahoe.actions.{AddCDCFile, AddFile, FileAction}
-import com.databricks.sql.transaction.tahoe.commands.DeltaCommand
+import com.databricks.sql.transaction.tahoe.actions.{AddCDCFile, AddFile,
+  DeletionVectorDescriptor, FileAction}
+import com.databricks.sql.transaction.tahoe.commands.{DeltaCommand,
+  DMLWithDeletionVectorsHelper}
 import com.databricks.sql.transaction.tahoe.commands.merge.MergeIntoMaterializeSource
-import com.databricks.sql.transaction.tahoe.files.TahoeFileIndex
+import com.databricks.sql.transaction.tahoe.deletionvectors.{RoaringBitmapArray,
+  RoaringBitmapArrayFormat}
+import com.databricks.sql.transaction.tahoe.files.{TahoeBatchFileIndex, TahoeFileIndex}
 import com.databricks.sql.transaction.tahoe.rapids.MergeExecutor.{
   totalBytesAndDistinctPartitionValues,
   FILE_PATH_COL,
@@ -50,12 +54,9 @@ import com.databricks.sql.transaction.tahoe.util.{AnalysisHelper, DeltaFileOpera
 import com.nvidia.spark.rapids.{GpuOverrides, RapidsConf, SparkPlanMeta}
 import com.nvidia.spark.rapids.RapidsConf.DELTA_LOW_SHUFFLE_MERGE_DEL_VECTOR_BROADCAST_THRESHOLD
 import com.nvidia.spark.rapids.delta._
-import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.{
-  METADATA_ROW_DEL_COL,
-  METADATA_ROW_DEL_FIELD,
-  METADATA_ROW_IDX_COL,
-  METADATA_ROW_IDX_FIELD}
+import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.METADATA_ROW_IDX_COL
 import com.nvidia.spark.rapids.shims.FileSourceScanExecMeta
+import org.apache.hadoop.conf.Configuration
 import org.roaringbitmap.longlong.Roaring64Bitmap
 
 import org.apache.spark.SparkContext
@@ -195,6 +196,10 @@ case class GpuLowShuffleMergeCommand(
 
   private[rapids] def mergeSourceDF: DataFrame = getMergeSource.df
 
+  /**
+   * Validates that identity-column metadata has not changed since the merge was analyzed and that
+   * insert actions do not explicitly populate identity columns that disallow explicit values.
+   */
   private def checkIdentityColumnHighWaterMarks(deltaTxn: OptimisticTransaction): Unit = {
     notMatchedClauses.foreach { clause =>
       val schema = deltaTxn.metadata.schema
@@ -604,15 +609,6 @@ class InsertOnlyMergeExecutor(override val context: MergeExecutorContext) extend
  */
 class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extends MergeExecutor {
 
-  private val scanRegistrationIds = new mutable.ArrayBuffer[String]()
-  private var touchedRowsBroadcast = Option.empty[
-    org.apache.spark.broadcast.Broadcast[Map[URI, Array[Byte]]]]
-
-  override def close(): Unit = {
-    scanRegistrationIds.foreach(GpuLowShuffleMergeScanRegistry.remove)
-    touchedRowsBroadcast.foreach(_.destroy())
-  }
-
   // We over-count numTargetRowsDeleted when there are multiple matches;
   // this is the amount of the overcount, so we can subtract it to get a correct final metric.
   private var multipleMatchDeleteOnlyOvercount: Option[Long] = None
@@ -684,26 +680,19 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
    * Though low shuffle merge algorithm performs better than traditional merge algorithm in some
    * cases, there are some case we should fallback to traditional merge executor:
    *
-   * 1. Low shuffle merge algorithm requires generating metadata columns such as
-   * [[METADATA_ROW_IDX_COL]], [[METADATA_ROW_DEL_COL]], which only implemented on
-   * [[org.apache.spark.sql.rapids.GpuFileSourceScanExec]]. That means we need to fallback to
-   * this normal executor when [[org.apache.spark.sql.rapids.GpuFileSourceScanExec]] is disabled
-   * for some reason.
-   * 2. Low shuffle merge algorithm currently needs to broadcast deletion vector, which may
-   * introduce extra overhead. It maybe better to fallback to this algorithm when the changeset
-   * it too large.
+   * 1. Low shuffle merge requires GPU file scans for both Databricks' metadata row-index scan and
+   * the temporary deletion-vector scan used to retain unmodified rows.
+   * 2. The temporary deletion vectors introduce extra overhead, so it may be better to fall back
+   * when the changeset is too large.
    */
   def shouldFallback(): Boolean = {
     // Trying to detect if we can execute finding touched files.
     val touchFilePlanOverrideSucceed = verifyGpuPlan(planForFindingTouchedFiles()) { planMeta =>
       def check(meta: SparkPlanMeta[SparkPlan]): Boolean = {
         meta match {
-          case scan if scan.isInstanceOf[FileSourceScanExecMeta] => scan
-            .asInstanceOf[FileSourceScanExecMeta]
-            .wrapped
-            .schema
-            .fieldNames
-            .contains(METADATA_ROW_IDX_COL) && scan.canThisBeReplaced
+          case scan if scan.isInstanceOf[FileSourceScanExecMeta] &&
+              isLowShuffleTargetScan(scan.asInstanceOf[FileSourceScanExecMeta]) =>
+            scan.asInstanceOf[FileSourceScanExecMeta].canThisBeReplaced
           case m => m.childPlans.exists(check)
         }
       }
@@ -718,20 +707,23 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
 
     // Trying to detect if we can execute the merge plan.
     val mergePlanOverrideSucceed = verifyGpuPlan(planForMergeExecution(touchedFiles)) { planMeta =>
-      var overrideCount = 0
+      var targetScanCount = 0
+      var gpuTargetScanCount = 0
       def count(meta: SparkPlanMeta[SparkPlan]): Unit = {
         meta match {
-          case scan if scan.isInstanceOf[FileSourceScanExecMeta] =>
-            if (scan.asInstanceOf[FileSourceScanExecMeta]
-              .wrapped.schema.fieldNames.contains(METADATA_ROW_DEL_COL) && scan.canThisBeReplaced) {
-              overrideCount += 1
+          case scan if scan.isInstanceOf[FileSourceScanExecMeta] &&
+              isLowShuffleTargetScan(scan.asInstanceOf[FileSourceScanExecMeta]) =>
+            val fileScan = scan.asInstanceOf[FileSourceScanExecMeta]
+            targetScanCount += 1
+            if (fileScan.canThisBeReplaced) {
+              gpuTargetScanCount += 1
             }
           case m => m.childPlans.foreach(count)
         }
       }
 
       count(planMeta)
-      overrideCount == 2
+      targetScanCount == 2 && gpuTargetScanCount == targetScanCount
     }
 
     if (!mergePlanOverrideSucceed) {
@@ -751,6 +743,13 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
     }
 
     false
+  }
+
+  private def isLowShuffleTargetScan(scan: FileSourceScanExecMeta): Boolean = {
+    scan.wrapped.relation.location match {
+      case index: TahoeBatchFileIndex => index.deltaLog == context.deltaTxn.deltaLog
+      case _ => false
+    }
   }
 
   private def verifyGpuPlan(input: DataFrame)(checkPlanMeta: SparkPlanMeta[SparkPlan] => Boolean)
@@ -797,7 +796,7 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
   }
 
   private lazy val dataSkippedTargetDF: DataFrame = {
-    addRowIndexMetaColumn(buildTargetDFWithFiles(dataSkippedFiles))
+    addRowIndexMetaColumn(dataSkippedFiles)
   }
 
   private lazy val touchedFiles: Map[String, (Roaring64Bitmap, AddFile)] = this.findTouchedFiles()
@@ -917,91 +916,25 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
 
 
   /**
-   * Modify original data frame to insert
+   * Uses Databricks' deletion-vector scan preparation to expose the file metadata column, then
+   * copies its file-relative row index into
    * [[GpuDeltaParquetFileFormatUtils.METADATA_ROW_IDX_COL]].
    */
-  private def addRowIndexMetaColumn(baseDF: DataFrame): DataFrame = {
-    val rowIdxAttr = AttributeReference(
-      METADATA_ROW_IDX_COL,
-      METADATA_ROW_IDX_FIELD.dataType,
-      METADATA_ROW_IDX_FIELD.nullable)()
-
-    val newPlan = baseDF.queryExecution.analyzed.transformUp {
-      case r: LogicalRelation if r.relation.isInstanceOf[HadoopFsRelation] =>
-        val fs = r.relation.asInstanceOf[HadoopFsRelation]
-        val newSchema = StructType(fs.dataSchema.fields).add(METADATA_ROW_IDX_FIELD)
-        val newFs = lowShuffleScanRelation(
-          fs, newSchema, GpuLowShuffleMergeScanInfo(rowIndexMaps = None))
-
-        val newOutput = r.output :+ rowIdxAttr
-        r.copy(relation = newFs, output = newOutput)
-      case p@Project(projectList, _) =>
-        val newProjectList = projectList :+ rowIdxAttr
-        p.copy(projectList = newProjectList)
-    }
-
-    Dataset.ofRows(context.spark, newPlan)
-  }
-
-  /**
-   * The result is scanning target table with touched files, and added an extra
-   * [[METADATA_ROW_DEL_COL]] to indicate whether filtered by joining with source table in first
-   * step.
-   */
-  private def getTouchedTargetDF(touchedFiles: Map[String, (Roaring64Bitmap, AddFile)])
-  : DataFrame = {
-    // Generate a new target dataframe that has same output attributes exprIds as the target plan.
-    // This allows us to apply the existing resolved update/insert expressions.
-    val baseTargetDF = buildTargetDFWithFiles(touchedFiles.values.map(_._2).toSeq)
-
-    val newPlan = {
-      val rowDelAttr = AttributeReference(
-        METADATA_ROW_DEL_COL,
-        METADATA_ROW_DEL_FIELD.dataType,
-        METADATA_ROW_DEL_FIELD.nullable)()
-
-      baseTargetDF.queryExecution.analyzed.transformUp {
-        case r: LogicalRelation if r.relation.isInstanceOf[HadoopFsRelation] =>
-          val fs = r.relation.asInstanceOf[HadoopFsRelation]
-          val newSchema = StructType(fs.dataSchema.fields).add(METADATA_ROW_DEL_FIELD)
-          val broadcastRows = touchedRowsBroadcast.getOrElse {
-            val rows = touchedFiles.map { case (path, (bitmap, _)) =>
-              new URI(path) -> RoaringBitmapWrapper(bitmap).serializeToBytes()
-            }
-            val broadcast = context.spark.sparkContext.broadcast(rows)
-            touchedRowsBroadcast = Some(broadcast)
-            broadcast
-          }
-          val newFs = lowShuffleScanRelation(
-            fs, newSchema, GpuLowShuffleMergeScanInfo(rowIndexMaps = Some(broadcastRows)))
-
-          val newOutput = r.output :+ rowDelAttr
-          r.copy(relation = newFs, output = newOutput)
-        case p@Project(projectList, _) =>
-          val newProjectList = projectList :+ rowDelAttr
-          p.copy(projectList = newProjectList)
+  private def addRowIndexMetaColumn(files: Seq[AddFile]): DataFrame = {
+    val fileIndex = context.deltaTxn.deltaLog.createDataFrame(context.deltaTxn.snapshot, files)
+      .queryExecution.analyzed.collectFirst {
+        case relation: LogicalRelation
+            if relation.relation.isInstanceOf[HadoopFsRelation] &&
+              relation.relation.asInstanceOf[HadoopFsRelation]
+                .location.isInstanceOf[TahoeFileIndex] =>
+          relation.relation.asInstanceOf[HadoopFsRelation]
+            .location.asInstanceOf[TahoeFileIndex]
+      }.getOrElse {
+        throw new IllegalStateException("Unable to find the Delta file index for low shuffle merge")
       }
-    }
-
-    val df = Dataset.ofRows(context.spark, newPlan)
-      .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
-
-    df
-  }
-
-  private def lowShuffleScanRelation(
-      relation: HadoopFsRelation,
-      dataSchema: StructType,
-      scanInfo: GpuLowShuffleMergeScanInfo): HadoopFsRelation = {
-    val scanId = GpuLowShuffleMergeScanRegistry.register(scanInfo)
-    scanRegistrationIds += scanId
-    val fileFormat = relation.fileFormat.asInstanceOf[DeltaParquetFileFormat]
-      .copy(optimizationsEnabled = false)
-    relation.copy(
-      dataSchema = dataSchema,
-      fileFormat = fileFormat,
-      options = relation.options + (GpuLowShuffleMergeScanRegistry.OPTION_KEY -> scanId))(
-      context.spark)
+    DMLWithDeletionVectorsHelper.createTargetDfForScanningForMatches(
+      context.spark, context.cmd.target, fileIndex)
+      .withColumn(METADATA_ROW_IDX_COL, col("_metadata.row_index"))
   }
 
   /**
@@ -1026,7 +959,10 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
     val sourceDF = this.sourceDF
       .withColumn(SOURCE_ROW_PRESENT_COL, DFUDFShims.exprToColumn(incrSourceRowCountExpr))
 
-    val targetDF = getTouchedTargetDF(touchedFiles)
+    // The join itself selects touched target rows, so this pass can scan the touched files without
+    // applying the temporary deletion vectors used by the unmodified-row pass.
+    val targetDF = buildTargetDFWithFiles(touchedFiles.values.map(_._2).toSeq)
+      .withColumn(TARGET_ROW_PRESENT_COL, lit(true))
 
     val joinedDF = {
       val joinType = if (hasNoInserts &&
@@ -1035,10 +971,7 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
       } else {
         "leftOuter"
       }
-      val matchedTargetDF = targetDF.filter(METADATA_ROW_DEL_COL)
-        .drop(METADATA_ROW_DEL_COL)
-
-      sourceDF.join(matchedTargetDF, DFUDFShims.exprToColumn(context.cmd.condition), joinType)
+      sourceDF.join(targetDF, DFUDFShims.exprToColumn(context.cmd.condition), joinType)
     }
 
     val modifiedRowsSchema = context.deltaTxn.metadata.schema
@@ -1136,9 +1069,16 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
   }
 
   private def getUnmodifiedDF(touchedFiles: Map[String, (Roaring64Bitmap, AddFile)]): DataFrame = {
-    getTouchedTargetDF(touchedFiles)
-      .filter(!col(METADATA_ROW_DEL_COL))
-      .drop(TARGET_ROW_PRESENT_COL, METADATA_ROW_DEL_COL)
+    val hadoopConf = context.deltaTxn.deltaLog.newDeltaHadoopConf()
+    val tablePath = context.deltaTxn.deltaLog.dataPath.toString
+    val filesWithTemporaryDVs = touchedFiles.values.map { case (bitmap, addFile) =>
+      addFile.copy(deletionVector = MergeExecutor.toDeletionVector(
+        bitmap,
+        Option(addFile.deletionVector),
+        hadoopConf,
+        tablePath))
+    }.toSeq
+    buildTargetDFWithFiles(filesWithTemporaryDVs)
   }
 }
 
@@ -1173,6 +1113,28 @@ object MergeExecutor {
   // of the Literal(null, StringType) which is needed, so using a fixed version here
   // rather than the version from Delta Lake.
   val CDC_TYPE_NOT_CDC_LITERAL: Literal = Literal(null, StringType)
+
+  private[rapids] def toDeletionVector(
+      bitmap: Roaring64Bitmap,
+      existing: Option[DeletionVectorDescriptor],
+      hadoopConf: Configuration,
+      tablePath: String): DeletionVectorDescriptor = {
+    val combined = existing.map { descriptor =>
+      RapidsDeletionVectors.loadScalaBitmap(
+        hadoopConf,
+        Some(descriptor.serializeToBase64()),
+        Some(RowIndexFilterType.IF_CONTAINED),
+        None,
+        tablePath)
+    }.getOrElse(new RoaringBitmapArray())
+    val touchedIndexes = bitmap.getLongIterator
+    while (touchedIndexes.hasNext) {
+      combined.add(touchedIndexes.next())
+    }
+    combined.runOptimize()
+    DeletionVectorDescriptor.inlineInLog(
+      combined.serializeAsByteArray(RoaringBitmapArrayFormat.Portable), combined.cardinality)
+  }
 
   /** Count the number of distinct partition values among the AddFiles in the given set. */
   def totalBytesAndDistinctPartitionValues(files: Seq[FileAction]): (Long, Int) = {
