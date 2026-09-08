@@ -24,15 +24,10 @@ from spark_session import is_databricks173_or_later, spark_version
 delta_merge_enabled_conf = copy_and_update(delta_writes_enabled_conf,
                                            {"spark.rapids.sql.command.MergeIntoCommand": "true",
                             "spark.rapids.sql.command.MergeIntoCommandEdge": "true",
-                            "spark.rapids.sql.delta.lowShuffleMerge.enabled": "true"})
+                            "spark.rapids.sql.delta.lowShuffleMerge.enabled": "true",
+                            "spark.rapids.sql.format.parquet.reader.type": "PERFILE"})
 
-# The Delta 2.4 implementation still uses a per-file iterator. The DBR 17.3 implementation
-# tracks file boundaries for every reader mode and deliberately does not force PERFILE.
-if not is_databricks173_or_later():
-    delta_merge_enabled_conf = copy_and_update(
-        delta_merge_enabled_conf,
-        {"spark.rapids.sql.format.parquet.reader.type": "PERFILE"})
-else:
+if is_databricks173_or_later():
     # Disable AQE temporarily until https://github.com/NVIDIA/spark-rapids/issues/14319 is resolved.
     delta_merge_enabled_conf = copy_and_update(
         delta_merge_enabled_conf,
@@ -142,14 +137,9 @@ def test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, us
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not is_databricks173_or_later(),
-                    reason="All-reader low shuffle merge is supported on DBR 17.3+")
-@pytest.mark.parametrize(
-    "reader_type", ["AUTO", "PERFILE", "MULTITHREADED", "COALESCING"], ids=idfn)
-def test_databricks_delta_low_shuffle_merge_reader_type(
-        spark_tmp_path, spark_tmp_table_factory, reader_type):
-    conf = copy_and_update(
-        delta_merge_enabled_conf,
-        {"spark.rapids.sql.format.parquet.reader.type": reader_type})
+                    reason="Databricks low shuffle merge requires DBR 17.3+")
+def test_databricks_delta_low_shuffle_merge_perfile(
+        spark_tmp_path, spark_tmp_table_factory):
     do_test_delta_merge_standard_upsert(
         spark_tmp_path,
         spark_tmp_table_factory,
@@ -157,8 +147,9 @@ def test_databricks_delta_low_shuffle_merge_reader_type(
         enable_deletion_vectors=False,
         num_slices=10,
         compare_logs=False,
-        conf=conf,
+        conf=delta_merge_enabled_conf,
         assert_func=assert_low_shuffle_merge)
+
 
 @allow_non_gpu(*delta_meta_allow)
 @delta_lake

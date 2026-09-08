@@ -31,25 +31,20 @@ import com.databricks.sql.transaction.tahoe.actions.{Metadata, Protocol}
 import com.databricks.sql.transaction.tahoe.files.TahoeFileIndex
 import com.databricks.sql.transaction.tahoe.schema.SchemaMergingUtils
 import com.nvidia.spark.rapids.{GpuMetric, RapidsConf, SparkPlanMeta}
-import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.{addMetadataColumnsToBatch,
-  addMetadataColumnToIterator}
+import com.nvidia.spark.rapids.delta.GpuDeltaParquetFileFormatUtils.addMetadataColumnToIterator
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 
-import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Literal.TrueLiteral
-import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader, PartitionReaderFactory}
 import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.{FilePartition, HadoopFsRelation, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, PartitionedFile}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.rapids.{GpuFileSourceScanExec, InputFileUtils}
 import org.apache.spark.sql.rapids.shims.TrampolineConnectShims
 import org.apache.spark.sql.sources.Filter
 import org.apache.spark.sql.types.{MetadataBuilder, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.SerializableConfiguration
 
 /**
  * GPU Delta Parquet file format for Databricks 17.3.
@@ -190,7 +185,12 @@ case class GpuDeltaParquetFileFormat(
       val scatterTime = metrics(GpuMetric.DELETION_VECTOR_SCATTER_TIME)
       val deletionVectorSize = metrics(GpuMetric.DELETION_VECTOR_SIZE)
       (file: PartitionedFile) => {
-        val bitmap = lookupBitmap(scanInfo, file.filePath.toString, deletionVectorSize)
+        val bitmap = scanInfo.rowIndexMaps.flatMap { broadcast =>
+          broadcast.value.get(new URI(file.filePath.toString)).map { bytes =>
+            deletionVectorSize += bytes.length
+            RoaringBitmapWrapper.deserializeFromBytes(bytes).inner
+          }
+        }
         addMetadataColumnToIterator(
           prepareSchema(requiredSchema),
           bitmap,
@@ -199,111 +199,6 @@ case class GpuDeltaParquetFileFormat(
           scatterTime).asInstanceOf[Iterator[InternalRow]]
       }
     }.getOrElse(dataReader)
-  }
-
-  override def createMultiFileReaderFactory(
-      broadcastedConf: Broadcast[SerializableConfiguration],
-      pushedFilters: Array[Filter],
-      fileScan: GpuFileSourceScanExec): PartitionReaderFactory = {
-    lowShuffleMergeScan.map { scanInfo =>
-      // Low-shuffle metadata is file-relative. Prevent the coalescing reader from combining
-      // rows from multiple files into one batch; the multithreaded reader remains enabled.
-      val delegate = super.createMultiFileReaderFactory(
-        broadcastedConf,
-        pushedFilters,
-        fileScan.copy(queryUsesInputFile = true)(fileScan.rapidsConf))
-      new LowShuffleMergePartitionReaderFactory(
-        delegate,
-        prepareSchema(fileScan.requiredSchema),
-        scanInfo,
-        fileScan.rapidsConf.get(
-          RapidsConf.DELTA_LOW_SHUFFLE_MERGE_SCATTER_DEL_VECTOR_BATCH_SIZE),
-        fileScan.allMetrics)
-    }.getOrElse(super.createMultiFileReaderFactory(broadcastedConf, pushedFilters, fileScan))
-  }
-
-  private def lookupBitmap(
-      scanInfo: GpuLowShuffleMergeScanInfo,
-      path: String,
-      deletionVectorSize: GpuMetric): Option[org.roaringbitmap.longlong.Roaring64Bitmap] = {
-    scanInfo.rowIndexMaps.flatMap { broadcast =>
-      broadcast.value.get(new URI(path)).map { bytes =>
-        deletionVectorSize += bytes.length
-        RoaringBitmapWrapper.deserializeFromBytes(bytes).inner
-      }
-    }
-  }
-
-  private class LowShuffleMergePartitionReaderFactory(
-      delegate: PartitionReaderFactory,
-      readSchema: StructType,
-      scanInfo: GpuLowShuffleMergeScanInfo,
-      maxScatterBatchSize: Int,
-      metrics: Map[String, GpuMetric]) extends PartitionReaderFactory {
-
-    override def createReader(partition: InputPartition): PartitionReader[InternalRow] =
-      delegate.createReader(partition)
-
-    override def supportColumnarReads(partition: InputPartition): Boolean = true
-
-    override def createColumnarReader(
-      partition: InputPartition): PartitionReader[ColumnarBatch] = {
-      val files = partition.asInstanceOf[FilePartition].filesWithAbsolutePaths
-      val byPath = files.flatMap { file =>
-        Seq(file.filePath.toString -> file, file.urlEncodedPath -> file)
-      }.toMap
-      new LowShuffleMergePartitionReader(
-        delegate.createColumnarReader(partition),
-        byPath,
-        readSchema,
-        scanInfo,
-        maxScatterBatchSize,
-        metrics)
-    }
-  }
-
-  private class LowShuffleMergePartitionReader(
-      delegate: PartitionReader[ColumnarBatch],
-      files: Map[String, PartitionedFile],
-      readSchema: StructType,
-      scanInfo: GpuLowShuffleMergeScanInfo,
-      maxScatterBatchSize: Int,
-      metrics: Map[String, GpuMetric]) extends PartitionReader[ColumnarBatch] {
-
-    private var currentFile: PartitionedFile = _
-    private var currentBitmap: Option[org.roaringbitmap.longlong.Roaring64Bitmap] = None
-    private var rowIndex = 0L
-
-    override def next(): Boolean = delegate.next()
-
-    override def get(): ColumnarBatch = {
-      val batch = delegate.get()
-      val inputPath = InputFileUtils.getCurInputFilePath()
-      val inputStart = InputFileUtils.getCurInputFileStartOffset
-      val inputLength = InputFileUtils.getCurInputFileLength
-      if (currentFile == null ||
-          (currentFile.filePath.toString != inputPath && currentFile.urlEncodedPath != inputPath) ||
-          currentFile.start != inputStart ||
-          currentFile.length != inputLength) {
-        currentFile = files.getOrElse(inputPath,
-          throw new IllegalStateException(s"Unknown low-shuffle input file $inputPath"))
-        rowIndex = 0L
-        currentBitmap = lookupBitmap(
-          scanInfo, currentFile.filePath.toString, metrics(GpuMetric.DELETION_VECTOR_SIZE))
-      }
-      val numRows = batch.numRows()
-      val result = addMetadataColumnsToBatch(
-        readSchema,
-        currentBitmap,
-        batch,
-        maxScatterBatchSize,
-        rowIndex,
-        metrics(GpuMetric.DELETION_VECTOR_SCATTER_TIME))
-      rowIndex += numRows
-      result
-    }
-
-    override def close(): Unit = delegate.close()
   }
 }
 
