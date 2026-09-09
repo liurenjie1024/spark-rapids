@@ -19,7 +19,7 @@ from conftest import is_databricks_runtime
 from delta_lake_merge_common import *
 from marks import *
 from pyspark.sql.types import *
-from spark_session import is_databricks173_or_later, spark_version
+from spark_session import is_databricks_version, spark_version
 
 delta_merge_enabled_conf = copy_and_update(delta_writes_enabled_conf,
                                            {"spark.rapids.sql.command.MergeIntoCommand": "true",
@@ -27,41 +27,16 @@ delta_merge_enabled_conf = copy_and_update(delta_writes_enabled_conf,
                             "spark.rapids.sql.delta.lowShuffleMerge.enabled": "true",
                             "spark.rapids.sql.format.parquet.reader.type": "PERFILE"})
 
-if is_databricks173_or_later():
-    # Disable AQE temporarily until https://github.com/NVIDIA/spark-rapids/issues/14319 is resolved.
-    delta_merge_enabled_conf = copy_and_update(
-        delta_merge_enabled_conf,
-        {"spark.sql.adaptive.enabled": "false"})
-
-
 def supports_delta_low_shuffle_merge():
-    return is_databricks173_or_later() or \
+    return is_databricks_version(17, 3) or \
         (not is_databricks_runtime() and spark_version().startswith("3.4"))
 
-
-def assert_low_shuffle_merge(do_merge, data_path, conf, expect_write=True):
-    assert expect_write
-    cpu_result = with_cpu_session(lambda spark: do_merge(spark, data_path + "/CPU"), conf=conf)
-
-    callback = spark_jvm().org.apache.spark.sql.rapids.ExecutionPlanCaptureCallback
-    callback.startCapture()
-    try:
-        gpu_result = with_gpu_session(
-            lambda spark: do_merge(spark, data_path + "/GPU"), conf=conf)
-        captured_plans = callback.getResultsWithTimeout(10000)
-    finally:
-        callback.endCapture()
-
-    assert_equal(cpu_result, gpu_result)
-    command_name = "GpuLowShuffleMergeCommand"
-    assert any(command_name in str(plan) for plan in captured_plans), \
-        f"{command_name} was not found in the captured MERGE plans"
 
 @allow_non_gpu("ColumnarToRowExec", *delta_meta_allow)
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
-                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3+")
+                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3")
 @pytest.mark.parametrize("use_cdf", [True, False], ids=idfn)
 @pytest.mark.parametrize("num_slices", num_slices_to_test, ids=idfn)
 def test_delta_low_shuffle_merge_when_gpu_file_scan_override_failed(spark_tmp_path,
@@ -89,7 +64,7 @@ def test_delta_low_shuffle_merge_when_gpu_file_scan_override_failed(spark_tmp_pa
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
-                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3+")
+                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3")
 @pytest.mark.parametrize("table_ranges", [(range(20), range(10)),  # partial insert of source
                                           (range(5), range(5)),  # no-op insert
                                           (range(10), range(20, 30))  # full insert of source
@@ -107,7 +82,7 @@ def test_delta_merge_not_match_insert_only(spark_tmp_path, spark_tmp_table_facto
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
-                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3+")
+                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3")
 @pytest.mark.parametrize("table_ranges", [(range(10), range(20)),  # partial delete of target
                                           (range(5), range(5)),  # full delete of target
                                           (range(10), range(20, 30))  # no-op delete
@@ -125,37 +100,18 @@ def test_delta_merge_match_delete_only(spark_tmp_path, spark_tmp_table_factory, 
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
-                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3+")
+                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3")
 @pytest.mark.parametrize("use_cdf", [pytest.param(True, marks=pytest.mark.xfail(reason="https://github.com/NVIDIA/spark-rapids/issues/13552")), False], ids=idfn)
 @pytest.mark.parametrize("num_slices", num_slices_to_test, ids=idfn)
 def test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, use_cdf, num_slices):
     do_test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, use_cdf, False,
                                         num_slices, False, delta_merge_enabled_conf)
 
-
-@allow_non_gpu(*delta_meta_allow)
-@delta_lake
-@ignore_order
-@pytest.mark.skipif(not is_databricks173_or_later(),
-                    reason="Databricks low shuffle merge requires DBR 17.3+")
-def test_databricks_delta_low_shuffle_merge_perfile(
-        spark_tmp_path, spark_tmp_table_factory):
-    do_test_delta_merge_standard_upsert(
-        spark_tmp_path,
-        spark_tmp_table_factory,
-        use_cdf=False,
-        enable_deletion_vectors=False,
-        num_slices=10,
-        compare_logs=False,
-        conf=delta_merge_enabled_conf,
-        assert_func=assert_low_shuffle_merge)
-
-
 @allow_non_gpu(*delta_meta_allow)
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
-                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3+")
+                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3")
 @pytest.mark.parametrize("use_cdf", [pytest.param(True, marks=pytest.mark.xfail(reason="https://github.com/NVIDIA/spark-rapids/issues/13552")), False], ids=idfn)
 @pytest.mark.parametrize("merge_sql", [
     "MERGE INTO {dest_table} d USING {src_table} s ON d.a == s.a" \
@@ -178,7 +134,7 @@ def test_delta_merge_upsert_with_condition(spark_tmp_path, spark_tmp_table_facto
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
-                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3+")
+                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3")
 @pytest.mark.parametrize("use_cdf", [True, False], ids=idfn)
 @pytest.mark.parametrize("num_slices", num_slices_to_test, ids=idfn)
 def test_delta_merge_upsert_with_unmatchable_match_condition(spark_tmp_path, spark_tmp_table_factory, use_cdf, num_slices):
@@ -194,7 +150,7 @@ def test_delta_merge_upsert_with_unmatchable_match_condition(spark_tmp_path, spa
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
-                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3+")
+                    reason="Low Shuffle Merge requires Delta Lake 2.4 or DBR 17.3")
 @pytest.mark.parametrize("use_cdf", [pytest.param(True, marks=pytest.mark.xfail(reason="https://github.com/NVIDIA/spark-rapids/issues/13552")), False], ids=idfn)
 def test_delta_merge_update_with_aggregation(spark_tmp_path, spark_tmp_table_factory, use_cdf):
     do_test_delta_merge_update_with_aggregation(spark_tmp_path, spark_tmp_table_factory, use_cdf, False,
