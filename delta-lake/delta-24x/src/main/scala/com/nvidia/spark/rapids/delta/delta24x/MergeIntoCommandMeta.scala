@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024, NVIDIA CORPORATION.
+ * Copyright (c) 2023-2026, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,10 +49,10 @@ class MergeIntoCommandMeta(
   }
 
   override def convertToGpu(): RunnableCommand = {
-    // TODO: Currently we only support low shuffler merge only when parquet per file read is enabled
-    // due to the limitation of implementing row index metadata column.
     if (conf.isDeltaLowShuffleMergeEnabled) {
-      if (conf.isParquetPerFileReadEnabled) {
+      val isExplicitMultiThreaded =
+        conf.isParquetMultiThreadReadEnabled && !conf.isParquetAutoReaderEnabled
+      if (conf.isParquetPerFileReadEnabled || isExplicitMultiThreaded) {
         GpuLowShuffleMergeCommand(
           mergeCmd.source,
           mergeCmd.target,
@@ -64,7 +64,8 @@ class MergeIntoCommandMeta(
           mergeCmd.migratedSchema)(conf)
       } else {
         logWarning(s"""Low shuffle merge disabled since ${RapidsConf.PARQUET_READER_TYPE} is
-          not set to ${RapidsReaderType.PERFILE}. Falling back to classic merge.""")
+          not set to ${RapidsReaderType.PERFILE} or ${RapidsReaderType.MULTITHREADED}.
+          Falling back to classic merge.""")
         GpuMergeIntoCommand(
           mergeCmd.source,
           mergeCmd.target,

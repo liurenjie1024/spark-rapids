@@ -15,7 +15,7 @@
 import pyspark.sql.functions as f
 import pytest
 
-from conftest import is_databricks_runtime
+from conftest import is_databricks_runtime, spark_jvm
 from delta_lake_merge_common import *
 from marks import *
 from pyspark.sql.types import *
@@ -26,6 +26,25 @@ delta_merge_enabled_conf = copy_and_update(delta_writes_enabled_conf,
                             "spark.rapids.sql.command.MergeIntoCommandEdge": "true",
                             "spark.rapids.sql.delta.lowShuffleMerge.enabled": "true",
                             "spark.rapids.sql.format.parquet.reader.type": "PERFILE"})
+
+
+def _assert_gpu_low_shuffle_merge(do_merge, data_path, conf, expect_write=True):
+    assert expect_write
+    cpu_result = with_cpu_session(lambda spark: do_merge(spark, data_path + "/CPU"), conf=conf)
+
+    callback = spark_jvm().org.apache.spark.sql.rapids.ExecutionPlanCaptureCallback
+    callback.startCapture()
+    try:
+        gpu_result = with_gpu_session(
+            lambda spark: do_merge(spark, data_path + "/GPU"), conf=conf)
+        captured_plans = callback.getResultsWithTimeout(10000)
+    finally:
+        callback.endCapture()
+
+    assert_equal(cpu_result, gpu_result)
+    class_name = "GpuLowShuffleMergeCommand"
+    assert any(callback.contains(plan, class_name) for plan in captured_plans), \
+        f"{class_name} was not found in the captured MERGE plans"
 
 @allow_non_gpu("ColumnarToRowExec", *delta_meta_allow)
 @delta_lake
@@ -98,9 +117,40 @@ def test_delta_merge_match_delete_only(spark_tmp_path, spark_tmp_table_factory, 
                     reason="Delta Lake Low Shuffle Merge only supports OSS Delta Lake 2.4")
 @pytest.mark.parametrize("use_cdf", [pytest.param(True, marks=pytest.mark.xfail(reason="https://github.com/NVIDIA/spark-rapids/issues/13552")), False], ids=idfn)
 @pytest.mark.parametrize("num_slices", num_slices_to_test, ids=idfn)
-def test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, use_cdf, num_slices):
+@pytest.mark.parametrize("reader_type", ["PERFILE", "MULTITHREADED"], ids=idfn)
+def test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, use_cdf, num_slices,
+                                     reader_type):
+    conf = copy_and_update(delta_merge_enabled_conf,
+                           {"spark.rapids.sql.format.parquet.reader.type": reader_type})
     do_test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, use_cdf, False,
-                                        num_slices, False, delta_merge_enabled_conf)
+                                        num_slices, False, conf)
+
+
+@allow_non_gpu(*delta_meta_allow)
+@delta_lake
+@ignore_order
+@pytest.mark.skipif(is_databricks_runtime() or not spark_version().startswith("3.4"),
+                    reason="Delta Lake Low Shuffle Merge only supports OSS Delta Lake 2.4")
+def test_delta_low_shuffle_merge_multithreaded_combined_files(
+        spark_tmp_path, spark_tmp_table_factory):
+    src_table_func = lambda spark: spark.range(0, 4000, 37).selectExpr(
+        "CAST(id AS INT) AS a", "concat('updated-', id) AS b")
+    dest_table_func = lambda spark: spark.range(4000).selectExpr(
+        "CAST(id AS INT) AS a", "concat('original-', id) AS b").repartition(4)
+    merge_sql = "MERGE INTO {dest_table} d USING {src_table} s ON d.a == s.a" \
+                " WHEN MATCHED THEN UPDATE SET d.b = s.b"
+    conf = copy_and_update(delta_merge_enabled_conf, {
+        "spark.rapids.sql.format.parquet.reader.type": "MULTITHREADED",
+        "spark.rapids.sql.reader.multithreaded.combine.sizeBytes": "1G",
+        "spark.rapids.sql.reader.batchSizeRows": "100",
+        "spark.sql.files.maxPartitionBytes": "1G",
+        "spark.sql.files.openCostInBytes": "1",
+        "parquet.block.size": "4096"
+    })
+    assert_delta_sql_merge_collect(
+        spark_tmp_path, spark_tmp_table_factory, False, False,
+        src_table_func, dest_table_func, merge_sql, False,
+        assert_func=_assert_gpu_low_shuffle_merge, conf=conf)
 
 @allow_non_gpu(*delta_meta_allow)
 @delta_lake

@@ -3209,6 +3209,11 @@ abstract class AbstractMultiFileCloudParquetPartitionReader(
    */
   override final def getFileFormatShortName: String = "Parquet"
 
+  /** Extension point for formats that synthesize columns after Parquet decoding. */
+  protected def addExtraColumnsToBatches(
+      input: Iterator[ColumnarBatch],
+      metadata: HostMemoryBuffersWithMetaDataBase): Iterator[ColumnarBatch] = input
+
   /**
    * Decode HostMemoryBuffers by GPU
    *
@@ -3230,17 +3235,19 @@ abstract class AbstractMultiFileCloudParquetPartitionReader(
         new ColumnarBatch(nullColumns, rows)
       }
 
-      // we have to add partition values here for this batch, we already verified that
-      // its not different for all the blocks in this batch
-      meta.allPartValues match {
-        case Some(partRowsAndValues) =>
-          val (rowsPerPart, partValues) = partRowsAndValues.unzip
-          // rowsPerPart has been adjusted already to account only the alive rows.
-          BatchWithPartitionDataUtils.addPartitionValuesToBatch(origBatch, rowsPerPart,
-            partValues, partitionSchema, maxGpuColumnSizeBytes)
-        case None =>
-          BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(origBatch,
-            meta.partitionedFile.partitionValues, partitionSchema, maxGpuColumnSizeBytes)
+      addExtraColumnsToBatches(Iterator.single(origBatch), meta).flatMap { batch =>
+        // we have to add partition values here for this batch, we already verified that
+        // its not different for all the blocks in this batch
+        meta.allPartValues match {
+          case Some(partRowsAndValues) =>
+            val (rowsPerPart, partValues) = partRowsAndValues.unzip
+            // rowsPerPart has been adjusted already to account only the alive rows.
+            BatchWithPartitionDataUtils.addPartitionValuesToBatch(batch, rowsPerPart,
+              partValues, partitionSchema, maxGpuColumnSizeBytes)
+          case None =>
+            BatchWithPartitionDataUtils.addSinglePartitionValueToBatch(batch,
+              meta.partitionedFile.partitionValues, partitionSchema, maxGpuColumnSizeBytes)
+        }
       }
 
     case buffer: HostMemoryBuffersWithMetaData =>
@@ -3336,7 +3343,8 @@ class MultiFileCloudParquetPartitionReader(
           isSchemaCaseSensitive, useFieldId, readDataSchema, clippedSchema, files,
           debugDumpPrefix, debugDumpAlways)
 
-        val batchIter = CachedGpuBatchIterator(tableReader, colTypes)
+        val batchIter = addExtraColumnsToBatches(
+          CachedGpuBatchIterator(tableReader, colTypes), buffer)
 
         if (allPartValues.isDefined) {
           val allPartInternalRows = allPartValues.get.map(_._2)
