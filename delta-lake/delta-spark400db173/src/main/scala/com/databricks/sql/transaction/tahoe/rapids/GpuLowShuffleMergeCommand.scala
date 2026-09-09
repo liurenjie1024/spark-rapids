@@ -684,8 +684,14 @@ class LowShuffleMergeExecutor(override val context: MergeExecutorContext) extend
    * the temporary deletion-vector scan used to retain unmodified rows.
    * 2. The temporary deletion vectors introduce extra overhead, so it may be better to fall back
    * when the changeset is too large.
+   * 3. Low shuffle merge does not generate change data feed rows.
    */
   def shouldFallback(): Boolean = {
+    if (DeltaConfigs.CHANGE_DATA_FEED.fromMetaData(context.deltaTxn.metadata)) {
+      logWarning("Change data feed is enabled, falling back to traditional merge.")
+      return true
+    }
+
     // Trying to detect if we can execute finding touched files.
     val touchFilePlanOverrideSucceed = verifyGpuPlan(planForFindingTouchedFiles()) { planMeta =>
       def check(meta: SparkPlanMeta[SparkPlan]): Boolean = {
