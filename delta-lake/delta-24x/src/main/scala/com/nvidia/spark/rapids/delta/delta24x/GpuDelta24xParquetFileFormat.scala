@@ -156,6 +156,11 @@ case class GpuDelta24xParquetFileFormat(
     private val delVectorScatterBatchSize =
       RapidsConf.DELTA_LOW_SHUFFLE_MERGE_SCATTER_DEL_VECTOR_BATCH_SIZE.get(sqlConf)
 
+    // Low shuffle metadata generation tracks file boundaries in the multithreaded reader.
+    // Force that reader when the session configuration would otherwise select coalescing.
+    override val canUseCoalesceFilesReader: Boolean = false
+    override val canUseMultiThreadReader: Boolean = true
+
     override protected def createBaseMultiFileCloudReader(
         fileIO: RapidsFileIO,
         conf: Configuration,

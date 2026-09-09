@@ -16,7 +16,7 @@
 
 package com.nvidia.spark.rapids.delta.delta24x
 
-import com.nvidia.spark.rapids.{DataFromReplacementRule, RapidsConf, RapidsMeta, RapidsReaderType, RunnableCommandMeta}
+import com.nvidia.spark.rapids.{DataFromReplacementRule, RapidsConf, RapidsMeta, RunnableCommandMeta}
 import com.nvidia.spark.rapids.delta.RapidsDeltaUtils
 
 import org.apache.spark.internal.Logging
@@ -50,32 +50,15 @@ class MergeIntoCommandMeta(
 
   override def convertToGpu(): RunnableCommand = {
     if (conf.isDeltaLowShuffleMergeEnabled) {
-      val isExplicitMultiThreaded =
-        conf.isParquetMultiThreadReadEnabled && !conf.isParquetAutoReaderEnabled
-      if (conf.isParquetPerFileReadEnabled || isExplicitMultiThreaded) {
-        GpuLowShuffleMergeCommand(
-          mergeCmd.source,
-          mergeCmd.target,
-          new GpuDeltaLog(mergeCmd.targetFileIndex.deltaLog, conf),
-          mergeCmd.condition,
-          mergeCmd.matchedClauses,
-          mergeCmd.notMatchedClauses,
-          mergeCmd.notMatchedBySourceClauses,
-          mergeCmd.migratedSchema)(conf)
-      } else {
-        logWarning(s"""Low shuffle merge disabled since ${RapidsConf.PARQUET_READER_TYPE} is
-          not set to ${RapidsReaderType.PERFILE} or ${RapidsReaderType.MULTITHREADED}.
-          Falling back to classic merge.""")
-        GpuMergeIntoCommand(
-          mergeCmd.source,
-          mergeCmd.target,
-          new GpuDeltaLog(mergeCmd.targetFileIndex.deltaLog, conf),
-          mergeCmd.condition,
-          mergeCmd.matchedClauses,
-          mergeCmd.notMatchedClauses,
-          mergeCmd.notMatchedBySourceClauses,
-          mergeCmd.migratedSchema)(conf)
-      }
+      GpuLowShuffleMergeCommand(
+        mergeCmd.source,
+        mergeCmd.target,
+        new GpuDeltaLog(mergeCmd.targetFileIndex.deltaLog, conf),
+        mergeCmd.condition,
+        mergeCmd.matchedClauses,
+        mergeCmd.notMatchedClauses,
+        mergeCmd.notMatchedBySourceClauses,
+        mergeCmd.migratedSchema)(conf)
     } else {
       GpuMergeIntoCommand(
         mergeCmd.source,

@@ -117,7 +117,8 @@ def test_delta_merge_match_delete_only(spark_tmp_path, spark_tmp_table_factory, 
                     reason="Delta Lake Low Shuffle Merge only supports OSS Delta Lake 2.4")
 @pytest.mark.parametrize("use_cdf", [pytest.param(True, marks=pytest.mark.xfail(reason="https://github.com/NVIDIA/spark-rapids/issues/13552")), False], ids=idfn)
 @pytest.mark.parametrize("num_slices", num_slices_to_test, ids=idfn)
-@pytest.mark.parametrize("reader_type", ["PERFILE", "MULTITHREADED"], ids=idfn)
+@pytest.mark.parametrize("reader_type", ["PERFILE", "MULTITHREADED", "COALESCING", "AUTO"],
+                         ids=idfn)
 def test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, use_cdf, num_slices,
                                      reader_type):
     conf = copy_and_update(delta_merge_enabled_conf,
@@ -131,8 +132,9 @@ def test_delta_merge_standard_upsert(spark_tmp_path, spark_tmp_table_factory, us
 @ignore_order
 @pytest.mark.skipif(is_databricks_runtime() or not spark_version().startswith("3.4"),
                     reason="Delta Lake Low Shuffle Merge only supports OSS Delta Lake 2.4")
-def test_delta_low_shuffle_merge_multithreaded_combined_files(
-        spark_tmp_path, spark_tmp_table_factory):
+@pytest.mark.parametrize("reader_type", ["MULTITHREADED", "COALESCING", "AUTO"], ids=idfn)
+def test_delta_low_shuffle_merge_combined_files(
+        spark_tmp_path, spark_tmp_table_factory, reader_type):
     src_table_func = lambda spark: spark.range(0, 4000, 37).selectExpr(
         "CAST(id AS INT) AS a", "concat('updated-', id) AS b")
     dest_table_func = lambda spark: spark.range(4000).selectExpr(
@@ -140,7 +142,7 @@ def test_delta_low_shuffle_merge_multithreaded_combined_files(
     merge_sql = "MERGE INTO {dest_table} d USING {src_table} s ON d.a == s.a" \
                 " WHEN MATCHED THEN UPDATE SET d.b = s.b"
     conf = copy_and_update(delta_merge_enabled_conf, {
-        "spark.rapids.sql.format.parquet.reader.type": "MULTITHREADED",
+        "spark.rapids.sql.format.parquet.reader.type": reader_type,
         "spark.rapids.sql.reader.multithreaded.combine.sizeBytes": "1G",
         "spark.rapids.sql.reader.batchSizeRows": "100",
         "spark.sql.files.maxPartitionBytes": "1G",
