@@ -99,6 +99,9 @@ def test_delta_merge_not_match_insert_only(spark_tmp_path, spark_tmp_table_facto
 @pytest.mark.parametrize("num_slices", num_slices_to_test, ids=idfn)
 def test_delta_merge_match_delete_only(spark_tmp_path, spark_tmp_table_factory, table_ranges,
                                        use_cdf, partition_columns, num_slices):
+    if (use_cdf and is_databricks_version(17, 3)
+            and table_ranges == (range(10), range(20, 30))):
+        pytest.xfail(reason="https://github.com/NVIDIA/spark-rapids/issues/13552")
     do_test_delta_merge_match_delete_only(spark_tmp_path, spark_tmp_table_factory, table_ranges,
                                           use_cdf, False, partition_columns, num_slices, False,
                                           delta_merge_enabled_conf)
