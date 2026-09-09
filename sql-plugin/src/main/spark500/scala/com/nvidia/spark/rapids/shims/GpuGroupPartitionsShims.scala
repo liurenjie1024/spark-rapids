@@ -17,16 +17,14 @@
 /*** spark-rapids-shim-json-lines
 {"spark": "500"}
 spark-rapids-shim-json-lines ***/
+package com.nvidia.spark.rapids.shims
 
-package com.nvidia.spark.rapids.spark500;
+import org.apache.spark.sql.execution.datasources.v2.GroupPartitionsExec
 
-import org.apache.spark.SparkConf;
-import org.apache.spark.shuffle.RapidsBlockingShuffleManagerBase;
-
-/** A shuffle manager optimized for the RAPIDS Plugin for Apache Spark. */
-public final class RapidsShuffleManager extends RapidsBlockingShuffleManagerBase {
-  public RapidsShuffleManager(SparkConf conf, boolean isDriver) {
-    super(conf, isDriver);
-    initialize();
+object GpuGroupPartitionsShims {
+  // SPARK-59045 wraps each Reducer in KeyReducer. displayName stays on the inner Reducer.
+  def reducerNames(groupPartitions: GroupPartitionsExec): Option[Seq[String]] = {
+    groupPartitions.reducers.map(
+      _.map(_.map(_.reducer.displayName()).getOrElse("identity")))
   }
 }
