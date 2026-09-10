@@ -78,7 +78,8 @@ def test_delta_merge_not_match_insert_only(spark_tmp_path, spark_tmp_table_facto
                                               table_ranges, use_cdf, False, partition_columns,
                                               num_slices, False, delta_merge_enabled_conf)
 
-@allow_non_gpu(*delta_meta_allow)
+# DBR 17.3 AQE can replace a no-match join with its row-based EmptyRelationExec.
+@allow_non_gpu("EmptyRelationExec", *delta_meta_allow)
 @delta_lake
 @ignore_order
 @pytest.mark.skipif(not supports_delta_low_shuffle_merge(),
