@@ -54,20 +54,20 @@ import org.apache.spark.sql.types.{DataType, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector => SparkVector}
 import org.apache.spark.util.SerializableConfiguration
 
+private case class Delta24xDeletionVectorBitmapInfo(
+    bitmap: RoaringBitmapArray,
+    bytes: Array[Byte],
+    isRetention: Boolean)
+
+private case class Delta24xRowSelection(
+    bitmap: RoaringBitmapArray,
+    isRetention: Boolean,
+    numRowsAlive: Long,
+    rowGroupOffsets: Array[Long],
+    rowGroupNumRows: Array[Int])
+
 private object Delta24xDeletionVectorUtils {
   private val DELTA_BITMAP_MAGIC_NUMBER_BYTE_SIZE = 4
-
-  case class BitmapInfo(
-      bitmap: RoaringBitmapArray,
-      bytes: Array[Byte],
-      isRetention: Boolean)
-
-  case class RowSelection(
-      bitmap: RoaringBitmapArray,
-      isRetention: Boolean,
-      numRowsAlive: Long,
-      rowGroupOffsets: Array[Long],
-      rowGroupNumRows: Array[Int])
 
   private def lookup(
       file: PartitionedFile,
@@ -79,7 +79,7 @@ private object Delta24xDeletionVectorUtils {
   def bitmapInfo(
       file: PartitionedFile,
       delVecs: Option[Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]]],
-      metrics: Option[Map[String, GpuMetric]] = None): BitmapInfo = {
+      metrics: Option[Map[String, GpuMetric]] = None): Delta24xDeletionVectorBitmapInfo = {
     lookup(file, delVecs) match {
       case Some(dv) =>
         require(dv.descriptor.storageType == DeletionVectorDescriptor.INLINE_DV_MARKER,
@@ -95,7 +95,7 @@ private object Delta24xDeletionVectorUtils {
         // cuDF consumes the portable Roaring serialization without Delta's four-byte header.
         val portableBytes = bitmap.serializeAsByteArray(RoaringBitmapArrayFormat.Portable)
         metrics.foreach(_(DELETION_VECTOR_SIZE) += descriptorBytes.length)
-        BitmapInfo(
+        Delta24xDeletionVectorBitmapInfo(
           bitmap,
           portableBytes.drop(DELTA_BITMAP_MAGIC_NUMBER_BYTE_SIZE),
           filterType == RowIndexFilterType.IF_NOT_CONTAINED)
@@ -105,7 +105,7 @@ private object Delta24xDeletionVectorUtils {
       case None =>
         val deltaBytes = new RoaringBitmapArray()
           .serializeAsByteArray(RoaringBitmapArrayFormat.Portable)
-        BitmapInfo(new RoaringBitmapArray(),
+        Delta24xDeletionVectorBitmapInfo(new RoaringBitmapArray(),
           deltaBytes.drop(DELTA_BITMAP_MAGIC_NUMBER_BYTE_SIZE), isRetention = false)
     }
   }
@@ -114,7 +114,7 @@ private object Delta24xDeletionVectorUtils {
     RapidsDeletionVectorRowCountUtils.getRowGroupMetadata(blocks)
 
   def numRowsAlive(
-      bitmapInfo: BitmapInfo,
+      bitmapInfo: Delta24xDeletionVectorBitmapInfo,
       rowGroupOffsets: Array[Long],
       rowGroupNumRows: Array[Int]): Long = {
     val totalRows = rowGroupNumRows.map(_.toLong).sum
@@ -130,10 +130,10 @@ private object Delta24xDeletionVectorUtils {
   }
 
   def rowSelection(
-      bitmapInfo: BitmapInfo,
+      bitmapInfo: Delta24xDeletionVectorBitmapInfo,
       rowGroupOffsets: Array[Long],
-      rowGroupNumRows: Array[Int]): RowSelection = {
-    RowSelection(bitmapInfo.bitmap, bitmapInfo.isRetention,
+      rowGroupNumRows: Array[Int]): Delta24xRowSelection = {
+    Delta24xRowSelection(bitmapInfo.bitmap, bitmapInfo.isRetention,
       numRowsAlive(bitmapInfo, rowGroupOffsets, rowGroupNumRows),
       rowGroupOffsets, rowGroupNumRows)
   }
@@ -163,7 +163,7 @@ private object Delta24xDeletionVectorUtils {
     }
   }
 
-  private def selectedRowIndexes(selection: RowSelection): CudfColumnVector = {
+  private def selectedRowIndexes(selection: Delta24xRowSelection): CudfColumnVector = {
     require(selection.rowGroupOffsets.length == selection.rowGroupNumRows.length,
       "Deletion-vector row-group metadata must be aligned")
     val rowGroupRanges = selection.rowGroupOffsets.zip(selection.rowGroupNumRows)
@@ -185,13 +185,19 @@ private object Delta24xDeletionVectorUtils {
 
   /**
    * Builds a batch for a metadata-only Parquet read, where there are no physical columns for
-   * cuDF to decode. It applies each file's deletion-vector selection to its row-group ranges,
-   * combines the surviving row indexes, and materializes the requested synthetic metadata
-   * columns.
+   * cuDF to decode. For each input selection, it generates the source row indexes covered by its
+   * contiguous row groups and applies the deletion-vector bitmap. It concatenates the surviving
+   * indexes in input order, then materializes the requested synthetic metadata columns; any other
+   * fields are null placeholders that the caller may replace with partition values.
+   *
+   * @param readDataSchema schema and column order of the returned batch
+   * @param selections deletion-vector selections for each input file or chunk, in output order
+   * @param outputColumns positions and values of row-index and row-status metadata columns
+   * @return a caller-owned GPU batch containing only rows that survive the selections
    */
   def metadataBatch(
       readDataSchema: StructType,
-      selections: Array[RowSelection],
+      selections: Array[Delta24xRowSelection],
       outputColumns: DeletionVectorOutputColumns): ColumnarBatch = {
     require(selections.nonEmpty, "Missing row selections for metadata-only Parquet read")
     val selectedByFile = selections.safeMap(selectedRowIndexes)
@@ -204,13 +210,16 @@ private object Delta24xDeletionVectorUtils {
     }
     withResource(selected) { rowIndexes =>
       val numRows = Math.toIntExact(rowIndexes.getRowCount)
-      val booleanColumns = outputColumns.booleanColumns.toMap
       val columns = readDataSchema.fields.zipWithIndex.safeMap { case (field, index) =>
         if (outputColumns.rowIndexColumn.contains(index)) {
           GpuColumnVector.from(rowIndexes.incRefCount(), field.dataType)
             .asInstanceOf[SparkVector]
-        } else if (booleanColumns.contains(index)) {
-          withResource(Scalar.fromBool(booleanColumns(index))) { value =>
+        } else if (outputColumns.deletedColumn.contains(index)) {
+          withResource(Scalar.fromBool(true)) { value =>
+            GpuColumnVector.from(value, numRows, field.dataType).asInstanceOf[SparkVector]
+          }
+        } else if (outputColumns.keptColumn.contains(index)) {
+          withResource(Scalar.fromBool(false)) { value =>
             GpuColumnVector.from(value, numRows, field.dataType).asInstanceOf[SparkVector]
           }
         } else {
@@ -230,8 +239,14 @@ private object Delta24xDeletionVectorUtils {
 
   /**
    * Describes how to replace low-shuffle merge metadata fields after cuDF applies a deletion
-   * vector. The row-index field receives cuDF's selected row indexes, while the row-deleted field
-   * is filled with the value implied by the scan's deletion-vector filter type.
+   * vector. The row-index field receives cuDF's selected row indexes. A row-deleted field is
+   * marked as deleted when the scan retains marked rows, or kept when it drops marked rows. With
+   * no deletion-vector map, all rows are retained and the field is marked as kept.
+   *
+   * @param readDataSchema schema whose metadata field positions will be populated
+   * @param delVecs optional per-file deletion vectors and their row-index filter types; `None`
+   *                means no rows are deleted
+   * @return named output positions for row indexes and the selected rows' deletion status
    */
   def outputColumns(
       readDataSchema: StructType,
@@ -241,27 +256,28 @@ private object Delta24xDeletionVectorUtils {
       case -1 => None
       case index => Some(index)
     }
-    val rowDeleted = readDataSchema.fieldNames.indexOf(METADATA_ROW_DEL_COL) match {
-      case -1 => Seq.empty
-      case index =>
-        val filterTypes = delVecs.toSeq.flatMap(_.value.values.map(_.filterType)).distinct
-        require(filterTypes.length == 1,
-          "Low shuffle merge row-deletion scans require one deletion-vector filter type")
-        val isDeleted = filterTypes.head match {
-          case RowIndexFilterType.IF_CONTAINED => false
-          case RowIndexFilterType.IF_NOT_CONTAINED => true
-          case other => throw new IllegalArgumentException(
-            s"Unexpected low shuffle merge deletion-vector filter type: $other")
-        }
-        Seq(index -> isDeleted)
-    }
-    DeletionVectorOutputColumns(rowIndex, rowDeleted)
+    val (deletedColumn, keptColumn) =
+      readDataSchema.fieldNames.indexOf(METADATA_ROW_DEL_COL) match {
+        case -1 => None -> None
+        case index =>
+          val filterTypes = delVecs.toSeq.flatMap(_.value.values.map(_.filterType)).distinct
+          require(filterTypes.length <= 1,
+            "Low shuffle merge row-deletion scans require at most one " +
+              "deletion-vector filter type")
+          filterTypes.headOption match {
+            case None | Some(RowIndexFilterType.IF_CONTAINED) => None -> Some(index)
+            case Some(RowIndexFilterType.IF_NOT_CONTAINED) => Some(index) -> None
+            case Some(other) => throw new IllegalArgumentException(
+              s"Unexpected low shuffle merge deletion-vector filter type: $other")
+          }
+      }
+    DeletionVectorOutputColumns(rowIndex, deletedColumn, keptColumn)
   }
 }
 
 private case class Delta24xSpillableDeletionVectorInfo(
     serializedBitmap: SpillableHostBuffer,
-    rowSelection: Delta24xDeletionVectorUtils.RowSelection) extends AutoCloseable {
+    rowSelection: Delta24xRowSelection) extends AutoCloseable {
   override def close(): Unit = serializedBitmap.close()
 }
 
