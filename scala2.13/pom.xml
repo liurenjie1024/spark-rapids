@@ -2039,7 +2039,7 @@ This will force full Scala code rebuild in downstream modules.
                                     <arg value="-s"/>
                                     <arg value="scripts/tests"/>
                                     <arg value="-p"/>
-                                    <arg value="test_check_with_resource_nesting.py"/>
+                                    <arg value="test_*.py"/>
                                 </exec>
                                 <!-- Existing nesting exceptions are tracked by
                                      https://github.com/NVIDIA/cudf-spark/issues/11713. -->
