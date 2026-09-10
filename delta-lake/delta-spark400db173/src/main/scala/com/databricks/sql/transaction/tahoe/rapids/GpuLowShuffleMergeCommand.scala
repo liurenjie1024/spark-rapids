@@ -335,8 +335,7 @@ case class GpuLowShuffleMergeCommand(
         Option(condition),
         matchedClauses.map(DeltaOperations.MergePredicate(_)),
         notMatchedClauses.map(DeltaOperations.MergePredicate(_)),
-        // We do not support notMatchedBySourcePredicates yet and fall back to CPU
-        // See https://github.com/NVIDIA/spark-rapids/issues/8415
+        // The command shim selects traditional GPU merge when these clauses are present.
         notMatchedBySourcePredicates = Seq.empty[MergePredicate]
       ),
       RowTracking.addPreservedRowTrackingTagIfNotSet(deltaTxn.snapshot))
@@ -347,6 +346,7 @@ case class GpuLowShuffleMergeCommand(
       condition,
       matchedClauses,
       notMatchedClauses,
+      notMatchedBySourceClauses,
       deltaTxn.metadata.partitionColumns.nonEmpty)
     recordDeltaEvent(targetDeltaLog, "delta.dml.merge.stats", data = stats)
 
