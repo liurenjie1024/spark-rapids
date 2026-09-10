@@ -183,6 +183,12 @@ private object Delta24xDeletionVectorUtils {
     }
   }
 
+  /**
+   * Builds a batch for a metadata-only Parquet read, where there are no physical columns for
+   * cuDF to decode. It applies each file's deletion-vector selection to its row-group ranges,
+   * combines the surviving row indexes, and materializes the requested synthetic metadata
+   * columns.
+   */
   def metadataBatch(
       readDataSchema: StructType,
       selections: Array[RowSelection],
@@ -222,6 +228,11 @@ private object Delta24xDeletionVectorUtils {
     }
   }
 
+  /**
+   * Describes how to replace low-shuffle merge metadata fields after cuDF applies a deletion
+   * vector. The row-index field receives cuDF's selected row indexes, while the row-deleted field
+   * is filled with the value implied by the scan's deletion-vector filter type.
+   */
   def outputColumns(
       readDataSchema: StructType,
       delVecs: Option[Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]]])
@@ -549,7 +560,7 @@ private case class GpuDelta24xParquetMultiFilePartitionReaderFactory(
       maxGpuColumnSizeBytes, useChunkedReader, maxChunkedReaderMemoryUsageSizeBytes,
       compressCfg, execMetrics, partitionSchema, poolConf, maxNumFileProcessed,
       ignoreMissingFiles, ignoreCorruptFiles, useFieldId, queryUsesInputFile,
-      keepReadsInOrder, combineConf, delVecs)
+      keepReadsInOrder, combineConf, readDataSchema, delVecs)
   }
 }
 
@@ -578,6 +589,7 @@ private class MultiFileCloudDelta24xParquetPartitionReader(
     queryUsesInputFile: Boolean,
     keepReadsInOrder: Boolean,
     combineConf: CombineConf,
+    readDataSchema: StructType,
     delVecs: Option[Broadcast[Map[URI, DeletionVectorDescriptorWithFilterType]]])
   extends AbstractMultiFileCloudParquetPartitionReader(fileIO, conf, files, filterFunc,
     isSchemaCaseSensitive, debugDumpPrefix, debugDumpAlways, maxReadBatchSizeRows,
@@ -585,6 +597,9 @@ private class MultiFileCloudDelta24xParquetPartitionReader(
     maxChunkedReaderMemoryUsageSizeBytes, compressCfg, execMetrics, partitionSchema,
     poolConf, maxNumFileProcessed, ignoreMissingFiles, ignoreCorruptFiles, useFieldId,
     queryUsesInputFile, keepReadsInOrder, combineConf) {
+
+  private val outputColumns =
+    Delta24xDeletionVectorUtils.outputColumns(readDataSchema, delVecs)
 
   override def readBatches(
       fileBuffersAndMetadata: HostMemoryBuffersWithMetaDataBase): Iterator[ColumnarBatch] = {
@@ -597,8 +612,6 @@ private class MultiFileCloudDelta24xParquetPartitionReader(
             EmptyGpuColumnarBatchIterator
           } else {
             GpuSemaphore.acquireIfNecessary(TaskContext.get())
-            val outputColumns =
-              Delta24xDeletionVectorUtils.outputColumns(meta.readSchema, delVecs)
             val batch = Delta24xDeletionVectorUtils.metadataBatch(
               meta.readSchema, selections, outputColumns)
             meta.allPartValues match {
@@ -625,10 +638,9 @@ private class MultiFileCloudDelta24xParquetPartitionReader(
     val deletionVectorInfos = deltaBuffer.deletionVectorMetadata.head.takeInfos()
     require(deletionVectorInfos.nonEmpty,
       "Missing deletion-vector metadata for low shuffle merge Parquet read")
-    val (outputColumns, parquetOptions) = closeOnExcept(hostBuffers) { _ =>
+    val parquetOptions = closeOnExcept(hostBuffers) { _ =>
       closeOnExcept(deletionVectorInfos) { _ =>
-        Delta24xDeletionVectorUtils.outputColumns(deltaBuffer.readSchema, delVecs) ->
-          getParquetOptions(deltaBuffer.readSchema, deltaBuffer.clippedSchema, useFieldId)
+        getParquetOptions(deltaBuffer.readSchema, deltaBuffer.clippedSchema, useFieldId)
       }
     }
     val columnTypes = deltaBuffer.readSchema.fields.map(_.dataType)
@@ -639,7 +651,7 @@ private class MultiFileCloudDelta24xParquetPartitionReader(
           GpuSemaphore.acquireIfNecessary(TaskContext.get())
           val hostDataBuffers = hostBuffers.safeMap(_.getDataHostBuffer())
           makeBatchIterator(deltaBuffer, hostDataBuffers, deletionVectorInfos,
-            parquetOptions, outputColumns, columnTypes)
+            parquetOptions, columnTypes)
         }
       }
     }
@@ -650,7 +662,6 @@ private class MultiFileCloudDelta24xParquetPartitionReader(
       hostDataBuffers: Array[HostMemoryBuffer],
       deletionVectorInfos: Array[Delta24xSpillableDeletionVectorInfo],
       parquetOptions: ParquetOptions,
-      outputColumns: DeletionVectorOutputColumns,
       columnTypes: Array[DataType]): Iterator[ColumnarBatch] = {
     val hostDeletionVectors = closeOnExcept(hostDataBuffers) { _ =>
       val hostDeletionVectorBuffers = deletionVectorInfos.safeMap {
